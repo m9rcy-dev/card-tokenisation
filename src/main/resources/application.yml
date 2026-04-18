@@ -1,0 +1,74 @@
+spring:
+  datasource:
+    url: ${DATASOURCE_URL}
+    username: ${DATASOURCE_USER}
+    password: ${DATASOURCE_PASSWORD}
+  jpa:
+    hibernate:
+      # Flyway owns schema management — Hibernate validates only, never modifies
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+kms:
+  # Supported values: aws | local-dev
+  # azure-kv is a stub, not yet implemented
+  provider: ${KMS_PROVIDER:aws}
+  aws:
+    region: ${AWS_REGION:ap-southeast-2}
+    master-key-arn: ${AWS_KMS_KEY_ARN:}
+  local-dev:
+    # 64-char hex string (32 bytes). Set KMS_LOCAL_DEV_KEK_HEX in env; only used when KMS_PROVIDER=local-dev.
+    # No default — KMS_LOCAL_DEV_KEK_HEX must be set explicitly when KMS_PROVIDER=local-dev.
+    # A hardcoded fallback would silently use a known key in production, violating PCI-DSS key secrecy.
+    kek-hex: ${KMS_LOCAL_DEV_KEK_HEX}
+  key-ring:
+    # Force re-fetch of KEK from KMS after this many hours
+    ttl-hours: 24
+    # Fail fast at startup if KMS is unreachable
+    startup-timeout-seconds: 30
+
+tokenisation:
+  # Token format — UUID (default) or LUHN_16
+  token-format: UUID
+  # HMAC-SHA256 hashing secret for PAN de-dup — separate from KEK
+  pan-hash-secret: ${PAN_HASH_SECRET}
+  # Default token lifetime (5 years)
+  default-token-ttl-days: 1825
+  tamper-detection:
+    # HMAC-SHA256 signing secret for key_versions row integrity checks — separate from KEK and PAN hash secret
+    signing-secret: ${TAMPER_DETECTION_SECRET}
+
+detokenisation:
+  rate-limit:
+    per-merchant-per-minute: 1000
+    per-service-per-minute: 10000
+
+rotation:
+  batch:
+    # Run rotation batch every 15 minutes
+    cron: "0 */15 * * * *"
+    size: 500
+    # Smaller batches during emergency rotation for faster re-encryption
+    emergency-size: 100
+  compliance:
+    max-key-age-days: 365
+
+audit:
+  # PCI-DSS minimum retention period
+  retention-years: 7
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+
+logging:
+  level:
+    com.yourorg.tokenisation: INFO
+  # PAN masking TurboFilter is registered in logback-spring.xml — applied globally

@@ -1,0 +1,19 @@
+meta {
+  name: Detokenise - 404 token not found
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tokens/00000000-0000-0000-0000-000000000000
+  body: none
+  auth: none
+}
+
+headers {
+  X-Merchant-ID: {{merchantId}}
+}
+
+assert {
+  res.status: eq 404
+}

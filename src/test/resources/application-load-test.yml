@@ -1,0 +1,46 @@
+# Load-test profile — extends application-test.yml (both profiles are active together).
+# Activated by AbstractLoadTest via @ActiveProfiles("load-test").
+# Override only what differs from the standard test profile.
+
+spring:
+  datasource:
+    hikari:
+      # Pool must be significantly larger than max test concurrency (20) to absorb
+      # background connection usage that co-exists with the test:
+      #   - HikariCP housekeeper thread (connection validation / eviction)
+      #   - Spring JPA EntityManagerFactory internal threads
+      #   - @BeforeEach JdbcTemplate cleanup between test methods
+      #   - Any Spring Boot auto-configuration that touches the DataSource
+      #
+      # Rule: pool-size ≥ 2 × max-concurrency
+      # With max-concurrency=20 → pool-size=40 gives a 20-connection safety buffer.
+      # The Testcontainers PostgreSQL container (max_connections=300) has ample headroom.
+      #
+      # WARNING: do NOT set minimum-idle == maximum-pool-size. A fully-saturated fixed
+      # pool leaves zero margin for background threads and causes HikariCP timeouts even
+      # when test concurrency is well below the pool limit.
+      maximum-pool-size: 40
+      minimum-idle: 5
+      # 10 s is plenty when the pool has headroom. A timeout here means either the pool
+      # is misconfigured (pool < concurrency+overhead) or the DB is genuinely stuck.
+      connection-timeout: 10000
+      # Disable synchronous commit for maximum write throughput.
+      # Acceptable for load tests — data durability is not under test here.
+      connection-init-sql: "SET synchronous_commit = off"
+  jpa:
+    # Suppress SQL logging — reduces console noise and improves throughput measurement accuracy.
+    show-sql: false
+
+detokenisation:
+  rate-limit:
+    # Effectively disable rate limiting so it does not interfere with throughput measurements.
+    # Rate-limit behaviour is tested separately in DetokenisationIntegrationTest.
+    per-merchant-per-minute: 99999999
+    per-service-per-minute: 99999999
+
+logging:
+  level:
+    # Suppress application-level DEBUG/INFO logging during load runs to reduce noise.
+    com.yourorg.tokenisation: WARN
+    org.hibernate.SQL: WARN
+    org.springframework.web: WARN

@@ -1,0 +1,19 @@
+meta {
+  name: Health Check
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/health
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq UP
+  res.body.checks.database: eq UP
+  res.body.checks.keyRing: eq UP
+  res.body.timestamp: isDefined
+}

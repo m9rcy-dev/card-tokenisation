@@ -1,0 +1,27 @@
+meta {
+  name: Key Rotation - Emergency (COMPROMISE)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/admin/keys/rotate
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "reason": "COMPROMISE",
+    "compromisedVersionId": "{{compromisedKeyVersionId}}",
+    "newKeyAlias": "emergency-rotation-{{$timestamp}}"
+  }
+}
+
+assert {
+  res.status: eq 202
+}

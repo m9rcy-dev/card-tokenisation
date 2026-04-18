@@ -1,0 +1,41 @@
+meta {
+  name: Tokenise PAN (ONE_TIME)
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tokens
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "pan": "4111111111111111",
+    "expiryMonth": 12,
+    "expiryYear": 2027,
+    "cardScheme": "VISA",
+    "tokenType": "ONE_TIME",
+    "merchantId": "{{merchantId}}"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.token: isDefined
+  res.body.tokenType: eq ONE_TIME
+  res.body.lastFour: eq 1111
+  res.body.cardScheme: eq VISA
+  res.body.createdAt: isDefined
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("token", res.body.token);
+  }
+}

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback configuration for the card tokenisation service.
+
+  PAN masking is enforced by PanMaskingTurboFilter, declared first so that
+  it intercepts all log events before any appender processes them.
+  Any log message containing 12-19 consecutive decimal digits is dropped.
+-->
+<configuration>
+
+    <!-- PAN masking safety net — blocks any log event that might contain a PAN digit sequence -->
+    <turboFilter class="com.yourorg.tokenisation.security.PanMaskingTurboFilter"/>
+
+    <!-- Delegate all other configuration to Spring Boot's defaults (console, file, etc.) -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- Application package at DEBUG for development clarity -->
+    <springProfile name="local,test">
+        <logger name="com.yourorg.tokenisation" level="DEBUG"/>
+    </springProfile>
+
+</configuration>

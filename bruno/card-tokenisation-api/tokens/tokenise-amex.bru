@@ -1,0 +1,32 @@
+meta {
+  name: Tokenise PAN (AMEX 15-digit)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tokens
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "pan": "378282246310005",
+    "expiryMonth": 3,
+    "expiryYear": 2026,
+    "cardScheme": "AMEX",
+    "tokenType": "ONE_TIME",
+    "merchantId": "{{merchantId}}"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.lastFour: eq 0005
+  res.body.cardScheme: eq AMEX
+}

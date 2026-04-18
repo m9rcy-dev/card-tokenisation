@@ -1,0 +1,26 @@
+meta {
+  name: Key Rotation - 400 missing compromisedVersionId for COMPROMISE
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/admin/keys/rotate
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "reason": "COMPROMISE",
+    "newKeyAlias": "emergency-test-key"
+  }
+}
+
+assert {
+  res.status: eq 400
+}

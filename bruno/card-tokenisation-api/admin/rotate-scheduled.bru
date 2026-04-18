@@ -1,0 +1,26 @@
+meta {
+  name: Key Rotation - Scheduled
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/admin/keys/rotate
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "reason": "SCHEDULED",
+    "newKeyAlias": "vault-key-{{$timestamp}}"
+  }
+}
+
+assert {
+  res.status: eq 202
+}

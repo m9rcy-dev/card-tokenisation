@@ -1,0 +1,30 @@
+meta {
+  name: Tokenise - 400 non-numeric PAN
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tokens
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "pan": "4111-1111-1111-1111",
+    "expiryMonth": 12,
+    "expiryYear": 2027,
+    "cardScheme": "VISA",
+    "tokenType": "ONE_TIME",
+    "merchantId": "{{merchantId}}"
+  }
+}
+
+assert {
+  res.status: eq 400
+}

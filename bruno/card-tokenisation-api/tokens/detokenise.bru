@@ -1,0 +1,25 @@
+meta {
+  name: Detokenise token
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tokens/{{token}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-Merchant-ID: {{merchantId}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.pan: isDefined
+  res.body.lastFour: isDefined
+  res.body.cardScheme: isDefined
+  res.body.tokenType: isDefined
+  res.body.expiryMonth: isDefined
+  res.body.expiryYear: isDefined
+}

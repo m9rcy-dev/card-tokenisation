@@ -1,0 +1,29 @@
+meta {
+  name: Tokenise - 400 missing merchantId
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tokens
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "pan": "4111111111111111",
+    "expiryMonth": 12,
+    "expiryYear": 2027,
+    "cardScheme": "VISA",
+    "tokenType": "ONE_TIME"
+  }
+}
+
+assert {
+  res.status: eq 400
+}

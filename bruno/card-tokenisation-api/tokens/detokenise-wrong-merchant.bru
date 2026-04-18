@@ -1,0 +1,19 @@
+meta {
+  name: Detokenise - 403 wrong merchant
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tokens/{{token}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-Merchant-ID: WRONG_MERCHANT
+}
+
+assert {
+  res.status: eq 403
+}

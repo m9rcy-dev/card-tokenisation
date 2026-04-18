@@ -1,0 +1,47 @@
+# Test profile — used by AbstractIntegrationTest via @ActiveProfiles("test")
+# PostgreSQL connection is overridden by @DynamicPropertySource in AbstractIntegrationTest.
+# AWS KMS is replaced entirely by LocalDevKmsAdapter — no cloud dependency.
+
+spring:
+  datasource:
+    # Overridden at runtime by Testcontainers @DynamicPropertySource
+    url: jdbc:postgresql://localhost:5432/tokenisation_test
+    username: test
+    password: test
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+  flyway:
+    enabled: true
+
+kms:
+  provider: local-dev
+  local-dev:
+    kek-hex: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+
+tokenisation:
+  token-format: UUID
+  pan-hash-secret: test-hmac-secret-32-bytes-exactly!!
+  default-token-ttl-days: 1825
+  tamper-detection:
+    signing-secret: test-tamper-secret-32-bytes!!!!!
+
+detokenisation:
+  rate-limit:
+    # Generous limits in unit/integration tests — rate limiter behaviour is tested explicitly
+    per-merchant-per-minute: 100000
+    per-service-per-minute: 100000
+
+rotation:
+  batch:
+    # Disabled during standard test runs — rotation tests trigger the job explicitly
+    cron: "-"
+    size: 10
+    emergency-size: 5
+  compliance:
+    max-key-age-days: 365
+
+logging:
+  level:
+    com.yourorg.tokenisation: DEBUG

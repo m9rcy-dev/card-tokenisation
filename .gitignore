@@ -1,0 +1,33 @@
+# ── Maven ─────────────────────────────────────────────────────────────────────
+target/
+!target/load-test-results/   # keep load test JSON results across cleans if desired
+
+# ── Gradle ────────────────────────────────────────────────────────────────────
+.gradle/
+# target/ is already ignored above — Gradle is configured to write there too
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.code-workspace
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Credentials / secrets ────────────────────────────────────────────────────
+*.p12
+*.jks
+*.pem
+*.key
+*.crt
+!src/test/resources/**/*.p12   # test keystores are intentionally committed
+.env
+.env.*
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/

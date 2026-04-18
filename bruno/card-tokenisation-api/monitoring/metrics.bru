@@ -1,0 +1,20 @@
+meta {
+  name: Metrics
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/metrics
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.uptimeSeconds: isDefined
+  res.body.tokeniseRequests: isDefined
+  res.body.detokeniseRequests: isDefined
+  res.body.serverErrorCount: isDefined
+  res.body.timestamp: isDefined
+}

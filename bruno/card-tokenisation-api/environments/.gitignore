@@ -1,0 +1,3 @@
+# Environment files may contain secrets — do not commit non-local envs
+*.bru
+!local.bru

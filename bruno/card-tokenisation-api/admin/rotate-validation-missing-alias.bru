@@ -1,0 +1,25 @@
+meta {
+  name: Key Rotation - 400 missing newKeyAlias for SCHEDULED
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/admin/keys/rotate
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "reason": "SCHEDULED"
+  }
+}
+
+assert {
+  res.status: eq 400
+}

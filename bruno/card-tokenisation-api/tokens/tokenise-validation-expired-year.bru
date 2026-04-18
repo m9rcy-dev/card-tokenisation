@@ -1,0 +1,30 @@
+meta {
+  name: Tokenise - 400 expiry year before 2024
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tokens
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "pan": "4111111111111111",
+    "expiryMonth": 12,
+    "expiryYear": 2020,
+    "cardScheme": "VISA",
+    "tokenType": "ONE_TIME",
+    "merchantId": "{{merchantId}}"
+  }
+}
+
+assert {
+  res.status: eq 400
+}

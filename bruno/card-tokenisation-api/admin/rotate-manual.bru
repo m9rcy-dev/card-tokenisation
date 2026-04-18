@@ -1,0 +1,26 @@
+meta {
+  name: Key Rotation - Manual
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/admin/keys/rotate
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "reason": "MANUAL",
+    "newKeyAlias": "vault-key-manual-{{$timestamp}}"
+  }
+}
+
+assert {
+  res.status: eq 202
+}

@@ -1,0 +1,25 @@
+# Local development profile — never deploy to production
+# Start PostgreSQL locally: docker run -p 5432:5432 -e POSTGRES_DB=tokenisation -e POSTGRES_USER=local -e POSTGRES_PASSWORD=local postgres:16-alpine
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/tokenisation
+    username: local
+    password: local
+  jpa:
+    show-sql: false
+
+kms:
+  # LocalDevKmsAdapter uses a fixed AES key defined in application-local.yml.
+  # NEVER use local-dev outside development or test environments.
+  provider: local-dev
+  local-dev:
+    # 32-byte hex-encoded AES-256 key — for local development only
+    kek-hex: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+
+tokenisation:
+  pan-hash-secret: local-dev-hmac-secret-not-for-production
+
+logging:
+  level:
+    com.yourorg.tokenisation: DEBUG

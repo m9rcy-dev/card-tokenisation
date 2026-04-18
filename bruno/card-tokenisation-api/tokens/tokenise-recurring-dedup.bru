@@ -1,0 +1,31 @@
+meta {
+  name: Tokenise PAN (RECURRING) - dedup returns same token
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tokens
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "pan": "5555555555554444",
+    "expiryMonth": 6,
+    "expiryYear": 2028,
+    "cardScheme": "MASTERCARD",
+    "tokenType": "RECURRING",
+    "merchantId": "{{merchantId}}"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.token: eq {{recurringToken}}
+}

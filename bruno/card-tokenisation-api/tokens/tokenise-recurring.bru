@@ -1,0 +1,40 @@
+meta {
+  name: Tokenise PAN (RECURRING)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tokens
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "pan": "5555555555554444",
+    "expiryMonth": 6,
+    "expiryYear": 2028,
+    "cardScheme": "MASTERCARD",
+    "tokenType": "RECURRING",
+    "merchantId": "{{merchantId}}"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.token: isDefined
+  res.body.tokenType: eq RECURRING
+  res.body.lastFour: eq 4444
+  res.body.cardScheme: eq MASTERCARD
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("recurringToken", res.body.token);
+  }
+}
