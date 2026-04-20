@@ -2,6 +2,7 @@ package com.yourorg.tokenisation.rotation;
 
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
+import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
@@ -68,8 +69,13 @@ class RotationBatchProcessorTest {
 
     @BeforeEach
     void setUp() {
+        // parallelism=1 keeps unit tests deterministic (sequential execution, no thread-ordering surprises)
+        RotationProperties rotationProperties = new RotationProperties();
+        rotationProperties.getBatch().setParallelism(1);
+
         processor = new RotationBatchProcessor(
-                tokenVaultRepository, keyVersionRepository, cipher, keyRing, auditLogger);
+                tokenVaultRepository, keyVersionRepository, cipher, keyRing, auditLogger,
+                rotationProperties);
         // In unit tests there is no Spring proxy, so set self to the processor itself.
         // Transactions are not under test here — integration tests verify transactional behaviour.
         processor.self = processor;

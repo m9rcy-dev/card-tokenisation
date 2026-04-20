@@ -2,6 +2,7 @@ package com.yourorg.tokenisation.rotation;
 
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
+import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
@@ -9,6 +10,7 @@ import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.TokenVault;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
@@ -21,6 +23,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Processes a single batch of token vault records during key rotation re-encryption.
@@ -46,6 +52,14 @@ import java.util.UUID;
  *   <li>Write a {@code TOKEN_REENCRYPTED} success audit event.
  * </ol>
  *
+ * <h3>Parallelism</h3>
+ * Records within a batch are processed concurrently using a fixed virtual-thread pool
+ * ({@code rotation-rewrap-N}). The pool size is controlled by
+ * {@link RotationProperties.Batch#getParallelism()} (default 8). Each record's
+ * {@link #reencryptSingleToken} runs in its own {@code REQUIRES_NEW} transaction via the
+ * Spring AOP proxy ({@link #self}), so failures on one record do not affect others.
+ * The pool is shut down cleanly on application shutdown via {@link #shutdownExecutor()}.
+ *
  * <h3>Why no KMS call during rotation</h3>
  * {@code encryptedDek} stored in {@code token_vault} is an AES-256-GCM blob produced by
  * {@link AesGcmCipher#wrapDek} using the in-memory KEK — it is NOT a KMS ciphertext.
@@ -67,6 +81,7 @@ public class RotationBatchProcessor {
     private final AesGcmCipher cipher;
     private final InMemoryKeyRing keyRing;
     private final AuditLogger auditLogger;
+    private final ExecutorService rewrapExecutor;
 
     /**
      * Self-reference through the Spring proxy to ensure {@link #reencryptSingleToken}
@@ -92,26 +107,44 @@ public class RotationBatchProcessor {
      * @param cipher               AES-256-GCM cipher for in-memory DEK unwrap and rewrap; must not be null
      * @param keyRing              in-memory key ring holding both old and new KEK bytes; must not be null
      * @param auditLogger          audit event writer; must not be null
+     * @param rotationProperties   rotation configuration (parallelism, batch sizes); must not be null
      */
     public RotationBatchProcessor(TokenVaultRepository tokenVaultRepository,
                                    KeyVersionRepository keyVersionRepository,
                                    AesGcmCipher cipher,
                                    InMemoryKeyRing keyRing,
-                                   AuditLogger auditLogger) {
+                                   AuditLogger auditLogger,
+                                   RotationProperties rotationProperties) {
         this.tokenVaultRepository = tokenVaultRepository;
         this.keyVersionRepository = keyVersionRepository;
         this.cipher = cipher;
         this.keyRing = keyRing;
         this.auditLogger = auditLogger;
+        this.rewrapExecutor = Executors.newFixedThreadPool(
+                rotationProperties.getBatch().getParallelism(),
+                Thread.ofVirtual().name("rotation-rewrap-", 0).factory());
+    }
+
+    /**
+     * Shuts down the rewrap thread pool on application shutdown.
+     *
+     * <p>Called automatically by Spring via {@code @PreDestroy}. Any in-flight rewrap
+     * tasks that were running when shutdown is triggered will complete normally (the pool
+     * is not interrupted); tasks that had not yet started are discarded.
+     */
+    @PreDestroy
+    void shutdownExecutor() {
+        rewrapExecutor.shutdown();
+        log.info("Rotation rewrap executor shutdown initiated");
     }
 
     /**
      * Processes one batch of token vault records that are still encrypted under the old key version.
      *
      * <p>Records are fetched with {@link PageRequest#of(int, int) PageRequest.of(0, batchSize)}.
-     * Each record is processed in isolation via {@link #reencryptSingleToken}, which runs
-     * in its own {@code REQUIRES_NEW} transaction. Failures on individual records are caught,
-     * logged, and counted — they do not abort the batch.
+     * Each record is submitted to the parallel rewrap executor as a {@link CompletableFuture}.
+     * All futures are awaited before returning the {@link BatchResult}. Failures on individual
+     * records are caught, logged, and counted — they do not abort the batch.
      *
      * @param oldKeyVersionId the UUID of the old key version (currently {@code ROTATING})
      * @param newKeyVersionId the UUID of the new key version (currently {@code ACTIVE})
@@ -131,34 +164,39 @@ public class RotationBatchProcessor {
             return BatchResult.empty();
         }
 
-        log.info("Re-encrypting batch of {} token(s) from key version [{}] → [{}]",
-                batch.size(), oldKeyVersionId, newKeyVersionId);
+        log.info("Re-encrypting batch of {} token(s) from key version [{}] → [{}] (parallelism={})",
+                batch.size(), oldKeyVersionId, newKeyVersionId, rewrapExecutor.toString());
 
-        int processed = 0;
-        int failed = 0;
-        for (TokenVault vault : batch) {
-            try {
-                self.reencryptSingleToken(vault, oldKeyVersionId, newKeyVersionId, newKeyVersion);
-                processed++;
-            } catch (Exception tokenException) {
-                failed++;
-                log.error("Re-encryption failed for token [{}]: {}",
-                        vault.getTokenId(), tokenException.getMessage(), tokenException);
-                auditLogger.logFailure(
-                        AuditEventType.RE_ENCRYPTION_FAILURE,
-                        vault.getTokenId(),
-                        null,
-                        null,
-                        null,
-                        "Re-encryption failed: " + tokenException.getClass().getSimpleName()
-                                + " — " + tokenException.getMessage(),
-                        null);
-            }
-        }
+        AtomicInteger processed = new AtomicInteger();
+        AtomicInteger failed    = new AtomicInteger();
+
+        List<CompletableFuture<Void>> futures = batch.stream()
+                .map(vault -> CompletableFuture.runAsync(() -> {
+                    try {
+                        self.reencryptSingleToken(vault, oldKeyVersionId, newKeyVersionId, newKeyVersion);
+                        processed.incrementAndGet();
+                    } catch (Exception tokenException) {
+                        failed.incrementAndGet();
+                        log.error("Re-encryption failed for token [{}]: {}",
+                                vault.getTokenId(), tokenException.getMessage(), tokenException);
+                        auditLogger.logFailure(
+                                AuditEventType.RE_ENCRYPTION_FAILURE,
+                                vault.getTokenId(),
+                                null,
+                                null,
+                                null,
+                                "Re-encryption failed: " + tokenException.getClass().getSimpleName()
+                                        + " — " + tokenException.getMessage(),
+                                null);
+                    }
+                }, rewrapExecutor))
+                .toList();
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
         log.info("Batch complete: {} processed, {} failed (old key [{}])",
-                processed, failed, oldKeyVersionId);
-        return new BatchResult(processed, failed, batch.size());
+                processed.get(), failed.get(), oldKeyVersionId);
+        return new BatchResult(processed.get(), failed.get(), batch.size());
     }
 
     /**

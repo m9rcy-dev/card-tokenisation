@@ -94,6 +94,17 @@ tasks.test {
     jvmArgs("-Xmx1g")
 }
 
+// ── Gatling source directory ──────────────────────────────────────────────────
+// Add src/gatling/java to the test compilation source set so Gatling simulations
+// are compiled alongside test classes and visible on the test classpath.
+sourceSets {
+    test {
+        java {
+            srcDir("src/gatling/java")
+        }
+    }
+}
+
 // ── Load test task ────────────────────────────────────────────────────────────
 // Mirrors: mvn test -P load-tests [-Dtest="*LoadTest#*1000requests*"]
 //
@@ -135,6 +146,39 @@ tasks.register<Test>("loadTest") {
     }
 
     // Load tests must never be considered up-to-date — latency results change with system state
+    outputs.upToDateWhen { false }
+}
+
+// ── Gatling simulation task ───────────────────────────────────────────────────
+// Runs against a *running* application instance (./gradlew bootRun or make start first).
+// Not a Spring Boot test — no Testcontainers, no embedded context.
+//
+// Usage:
+//   ./gradlew gatlingTest                                          # 20k tokenisation
+//   ./gradlew gatlingTest -PsimClass=...DetokenisationSimulation  # detokenisation
+//   ./gradlew gatlingTest -PtotalRequests=1000000                 # 1M scale
+//   make gatling-test BUILD_TOOL=gradle GATLING_SCALE=50k
+//
+// Gatling simulations live in src/gatling/java/ and are compiled with the test classpath.
+tasks.register<JavaExec>("gatlingTest") {
+    description = "Run a Gatling simulation against the running app. Use -PsimClass=... -PtotalRequests=... -PbaseUrl=..."
+    group = "verification"
+    mainClass.set("io.gatling.app.Gatling")
+    classpath = sourceSets["test"].runtimeClasspath
+    jvmArgs("-Xmx2g", "-Djdk.virtualThreadScheduler.parallelism=256")
+    systemProperties(mapOf(
+        "baseUrl"        to (project.findProperty("baseUrl") ?: "http://localhost:8080"),
+        "totalRequests"  to (project.findProperty("totalRequests") ?: "20000"),
+        "dbUrl"          to (project.findProperty("dbUrl") ?: "jdbc:postgresql://localhost:5432/tokenisation"),
+        "dbUser"         to (project.findProperty("dbUser") ?: "tokenisation_app"),
+        "dbPass"         to (project.findProperty("dbPass") ?: "change_me")
+    ))
+    args = listOf(
+        "-s", project.findProperty("simClass")?.toString()
+                ?: "com.yourorg.tokenisation.TokenisationSimulation",
+        "-rd", "target/gatling"
+    )
+    // Always re-run — latency results are time-sensitive
     outputs.upToDateWhen { false }
 }
 
