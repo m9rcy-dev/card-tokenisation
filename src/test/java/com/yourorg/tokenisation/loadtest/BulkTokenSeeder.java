@@ -93,7 +93,7 @@ public class BulkTokenSeeder {
                 Arrays.fill(panBytes, (byte) 0);
 
                 String panHash = panHasher.hash(pan);
-                String token = "tok-" + UUID.randomUUID();
+                String token = UUID.randomUUID().toString(); // 36 chars — matches VARCHAR(36)
                 tokens[i] = token;
 
                 chunk.add(new Object[]{

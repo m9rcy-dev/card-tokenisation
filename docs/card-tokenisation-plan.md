@@ -1842,6 +1842,12 @@ A task is only marked complete in `progress.md` when ALL of the following are tr
 4. Integration test written and passing
 5. No PAN appears in any log output (asserted in tests where relevant)
 6. Code reviewed against clean code checklist in this section
+7. **Full standard test suite passes with zero failures:**
+   ```bash
+   JAVA_HOME=/opt/homebrew/opt/openjdk@21 mvn test   # or: make test
+   ```
+   A passing compile is not sufficient. New code must not break any existing test.
+   If failures exist before work starts, record them in `progress.md` Deviations first.
 
 ---
 
