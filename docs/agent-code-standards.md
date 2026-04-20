@@ -192,4 +192,36 @@ Javadoc answers: **what** it does, **why** any non-obvious decision was made, an
 [ ] DEK byte arrays zeroed in finally blocks
 [ ] No key material in exception messages
 [ ] IVs generated fresh per encryption operation
+[ ] Full test suite passes: JAVA_HOME=/opt/homebrew/opt/openjdk@21 mvn test
+    (or: make test) — zero failures before changes are considered complete
 ```
+
+## Definition of Done
+
+A task is **not done** until the full standard test suite passes with zero failures.
+
+Run one of the following after every change and confirm `BUILD SUCCESS`:
+
+```bash
+# Maven (primary build tool)
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 mvn test
+
+# Via Makefile (sets JAVA_HOME automatically)
+make test
+
+# Gradle equivalent
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew test
+```
+
+This matters because changes that look correct in isolation can break existing tests
+by corrupting shared state (key ring, database), changing a constructor signature,
+or altering behaviour that other tests depend on.
+
+**Rules:**
+
+- Never mark a task `[x]` in `progress.md` without a passing test run.
+- If pre-existing failures exist, document them in `progress.md` Deviations before
+  starting work — do not let new failures hide behind old ones.
+- Load tests (`@Tag("load")`) are excluded from `mvn test` / `make test` by design.
+  Run them separately with `make load-test` when testing rotation or high-volume scenarios.
+- A passing compile (`mvn compile`) is not sufficient — always run the full test suite.

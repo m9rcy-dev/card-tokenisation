@@ -3,6 +3,7 @@ package com.yourorg.tokenisation.loadtest;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
+import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
 import com.yourorg.tokenisation.crypto.TamperDetector;
 import com.yourorg.tokenisation.domain.KeyVersion;
@@ -65,9 +66,11 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
     @Autowired private TokenVaultRepository tokenVaultRepository;
     @Autowired private KeyRotationService keyRotationService;
     @Autowired private RotationJob rotationJob;
+    @Autowired private RotationProperties rotationProperties;
     @Autowired private InMemoryKeyRing keyRing;
     @Autowired private KmsProvider kmsProvider;
     @Autowired private TamperDetector tamperDetector;
+    @Autowired private BulkTokenSeeder bulkSeeder;
 
     /** Token strings for the 10K pre-seeded tokens — populated by {@link #setUpForRotationTest()}. */
     private String[] seededTokens;
@@ -144,13 +147,10 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
         long baselineRps = baselineCompleted.get() / 3;
         long beforeRotation = baselineCompleted.get();
 
-        // Initiate rotation and drive batch loop to completion
+        // Initiate rotation — processRotationBatch now drains all batches in one call
         keyRotationService.initiateScheduledRotation("load-test-key-v2", RotationReason.SCHEDULED);
         long rotationStart = System.currentTimeMillis();
-        while (tokenVaultRepository.countActiveByKeyVersionId(oldKeyId) > 0) {
-            rotationJob.processRotationBatch();
-        }
-        rotationJob.processRotationBatch(); // trigger cutover (count = 0)
+        rotationJob.processRotationBatch(); // drains all batches + triggers cutover
         long rotationDurationSecs = Math.max(1, (System.currentTimeMillis() - rotationStart) / 1_000);
 
         long duringRotation = baselineCompleted.get() - beforeRotation;
@@ -194,12 +194,9 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
     void rotation_allPreRotationTokensDetokenisableAfterRotation() {
         UUID oldKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
 
-        // Run rotation to completion
+        // Run rotation to completion — single call now drains all batches + triggers cutover
         keyRotationService.initiateScheduledRotation("load-test-key-v2", RotationReason.SCHEDULED);
-        while (tokenVaultRepository.countActiveByKeyVersionId(oldKeyId) > 0) {
-            rotationJob.processRotationBatch();
-        }
-        rotationJob.processRotationBatch(); // trigger cutover
+        rotationJob.processRotationBatch();
 
         // Verify all pre-seeded tokens are still detokenisable (parallel verification)
         long[] latencies = new long[seededTokens.length];
@@ -247,21 +244,55 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
         long heapBefore = captureHeapMb();
         UUID oldKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
 
-        // Run full rotation cycle
+        // Run full rotation cycle — single call drains all batches + triggers cutover
         keyRotationService.initiateScheduledRotation("load-test-key-v2", RotationReason.SCHEDULED);
-        while (tokenVaultRepository.countActiveByKeyVersionId(oldKeyId) > 0) {
-            rotationJob.processRotationBatch();
-        }
         rotationJob.processRotationBatch();
 
         long heapGrowthMb = captureHeapMb() - heapBefore;
 
-        new LoadTestResult("LT-R-3", SEED_TOKEN_COUNT, 1, 0,  // concurrency=1 (rotation is single-threaded batch)
+        new LoadTestResult("LT-R-3", SEED_TOKEN_COUNT, rotationProperties.getBatch().getParallelism(), 0,
                 0, 0, 0, 0, 0L, heapGrowthMb, Instant.now()).writeToFile();
 
         assertThat(heapGrowthMb)
                 .as("LT-R-3: heap growth during rotation must be ≤ 256MB (actual: %dMB)", heapGrowthMb)
                 .isLessThanOrEqualTo(256L);
+    }
+
+    // ── LT-R-4 ───────────────────────────────────────────────────────────────
+
+    /**
+     * LT-R-4: 100,000 pre-seeded tokens · all migrated to new key · heap growth ≤ 512MB.
+     *
+     * <p>Tokens are seeded via JDBC bulk insert (not HTTP) so setup completes in seconds
+     * rather than minutes. Rotation uses the parallel rewrap executor — the actual
+     * throughput is captured in the result file for capacity planning.
+     *
+     * <p>Run with: {@code mvn test -P load-tests -Dtest="*100000*"}
+     */
+    @Test
+    void rotation_100000requests_allMigratedToNewKey() {
+        // Seed 100K tokens via JDBC bulk insert — bypasses HTTP API for speed
+        bulkSeeder.seedTokens(100_000, MERCHANT, 1_000);
+        long heapBefore = captureHeapMb();
+        UUID oldKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
+
+        keyRotationService.initiateScheduledRotation("load-test-key-v2", RotationReason.SCHEDULED);
+        long start = System.currentTimeMillis();
+        rotationJob.processRotationBatch(); // drains all 100 batches × 1000 records in one shot
+        long durationMs = System.currentTimeMillis() - start;
+
+        long remaining  = tokenVaultRepository.countActiveByKeyVersionId(oldKeyId);
+        long heapGrowth = captureHeapMb() - heapBefore;
+
+        new LoadTestResult("LT-R-4", 100_000, rotationProperties.getBatch().getParallelism(),
+                durationMs, 0, 0, 0, 0, 0L, heapGrowth, Instant.now()).writeToFile();
+
+        assertThat(remaining)
+                .as("LT-R-4: 0 tokens remain on old key after 100K rotation")
+                .isZero();
+        assertThat(heapGrowth)
+                .as("LT-R-4: heap growth during 100K rotation must be ≤ 512MB (actual: %dMB)", heapGrowth)
+                .isLessThanOrEqualTo(512L);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

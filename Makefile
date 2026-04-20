@@ -127,3 +127,38 @@ clean:
 gradle-wrapper:
 	gradle wrapper --gradle-version 8.10.2
 	@echo "gradlew generated. Commit gradle/wrapper/ and gradlew to version control."
+
+# ── Gatling simulation targets ────────────────────────────────────────────────
+# Gatling simulations run against a *running* application instance (make start first).
+# They are NOT Spring Boot tests and do not use Testcontainers.
+#
+# Usage:
+#   make gatling-test                                  # 20k tokenisation (default)
+#   make gatling-test GATLING_SCALE=50k               # 50k tokenisation
+#   make gatling-test GATLING_SCALE=100k              # 100k tokenisation
+#   make gatling-test GATLING_SCALE=1m                # 1M tokenisation
+#   make gatling-test GATLING_SIM=...DetokenisationSimulation GATLING_SCALE=50k
+#   make gatling-test GATLING_SIM=...RotationSimulation GATLING_SCALE=20k
+#
+# Override target host: GATLING_BASE_URL=http://host:8080 make gatling-test
+# Override DB connection: GATLING_DB_URL=... GATLING_DB_USER=... GATLING_DB_PASS=...
+
+GATLING_BASE_URL  ?= http://localhost:8080
+GATLING_DB_URL    ?= jdbc:postgresql://localhost:5432/tokenisation
+GATLING_DB_USER   ?= tokenisation_app
+GATLING_DB_PASS   ?= change_me
+GATLING_SIM       ?= com.yourorg.tokenisation.TokenisationSimulation
+GATLING_SCALE     ?= 20k
+_GATLING_REQUESTS := $(shell echo $(GATLING_SCALE) | sed 's/k/000/; s/m/000000/')
+
+.PHONY: gatling-test
+
+## gatling-test [GATLING_SCALE=20k|50k|100k|1m] [GATLING_SIM=...]: run Gatling simulation (requires: make start)
+gatling-test:
+	$(MVN) gatling:test -P gatling-tests \
+	  -DsimulationClass=$(GATLING_SIM) \
+	  -DbaseUrl=$(GATLING_BASE_URL) \
+	  -DtotalRequests=$(_GATLING_REQUESTS) \
+	  -DdbUrl=$(GATLING_DB_URL) \
+	  -DdbUser=$(GATLING_DB_USER) \
+	  -DdbPass=$(GATLING_DB_PASS)

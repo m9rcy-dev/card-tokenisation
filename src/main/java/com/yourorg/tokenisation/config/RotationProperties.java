@@ -83,6 +83,21 @@ public class RotationProperties {
         private int emergencySize = 100;
 
         /**
+         * Number of parallel virtual threads used to re-encrypt DEKs within a single batch.
+         * Each thread gets its own {@code REQUIRES_NEW} transaction, so failures are isolated.
+         * Must be ≤ {@code hikari.maximum-pool-size − 5} to leave headroom for background threads.
+         */
+        private int parallelism = 8;
+
+        /**
+         * Maximum number of batches processed in a single cron invocation.
+         * {@code 0} means unlimited — the job drains all remaining records in one shot.
+         * Set to a positive value to cap wall-clock time per cron tick (e.g. {@code 100}
+         * batches × 500 records = 50,000 records per 15-minute window).
+         */
+        private int maxBatchesPerRun = 0;
+
+        /**
          * Returns the cron expression.
          *
          * @return cron string; {@code "-"} if disabled
@@ -134,6 +149,42 @@ public class RotationProperties {
          */
         public void setEmergencySize(int emergencySize) {
             this.emergencySize = emergencySize;
+        }
+
+        /**
+         * Returns the number of parallel rewrap threads per batch.
+         *
+         * @return parallelism; default 8
+         */
+        public int getParallelism() {
+            return parallelism;
+        }
+
+        /**
+         * Sets the number of parallel rewrap threads per batch.
+         *
+         * @param parallelism must be positive; keep ≤ HikariCP pool size minus 5
+         */
+        public void setParallelism(int parallelism) {
+            this.parallelism = parallelism;
+        }
+
+        /**
+         * Returns the maximum number of batches per cron invocation.
+         *
+         * @return max batches; {@code 0} means unlimited
+         */
+        public int getMaxBatchesPerRun() {
+            return maxBatchesPerRun;
+        }
+
+        /**
+         * Sets the maximum batches per cron invocation.
+         *
+         * @param maxBatchesPerRun {@code 0} for unlimited; positive to cap per-tick work
+         */
+        public void setMaxBatchesPerRun(int maxBatchesPerRun) {
+            this.maxBatchesPerRun = maxBatchesPerRun;
         }
     }
 

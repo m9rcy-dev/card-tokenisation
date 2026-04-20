@@ -124,24 +124,71 @@ public class RotationJob {
             return;
         }
 
-        log.info("Rotation batch: re-encrypting tokens from old key [{}] → new key [{}]",
+        log.info("Rotation drain starting: re-encrypting tokens from old key [{}] → new key [{}]",
                 oldKeyVersionId, newKeyVersionId);
 
         int batchSize = rotationProperties.getBatch().getSize();
-        RotationBatchProcessor.BatchResult result =
-                batchProcessor.processBatch(oldKeyVersionId, newKeyVersionId, batchSize);
+        drainRotationBatches(oldKeyVersionId, newKeyVersionId, batchSize);
 
-        log.info("Rotation batch result: processed={}, failed={}, fetched={}",
-                result.processedCount(), result.failedCount(), result.totalFetched());
-
-        // Check if all tokens have been migrated (only if the batch was a full page — if partial,
-        // it's very likely the remaining count is zero, but always do the authoritative count check)
+        // Authoritative count — drainRotationBatches may have stopped early (maxBatchesPerRun)
         long remaining = tokenVaultRepository.countActiveByKeyVersionId(oldKeyVersionId);
         if (remaining == 0) {
             log.info("All tokens migrated from key [{}] — initiating cutover", oldKeyVersionId);
             completeRotation(rotatingKey);
         } else {
             log.info("Rotation in progress: {} token(s) remaining on old key [{}]", remaining, oldKeyVersionId);
+        }
+    }
+
+    /**
+     * Drives the batch re-encryption loop until all tokens are migrated or the
+     * configured {@code maxBatchesPerRun} cap is reached.
+     *
+     * <p>With {@code maxBatchesPerRun = 0} (the default) the loop runs until
+     * {@link RotationBatchProcessor#processBatch} returns an empty result, meaning all
+     * records on the old key have been processed. This converts the rotation from a
+     * slow 15-minute-per-batch drip into a single continuous operation that completes
+     * in minutes for even 1M-record vaults.
+     *
+     * <p>With {@code maxBatchesPerRun > 0} the loop stops after that many batches and
+     * the next cron tick picks up where it left off — useful when you want to bound the
+     * wall-clock time each cron invocation can consume.
+     *
+     * @param oldKeyVersionId old key UUID
+     * @param newKeyVersionId new key UUID
+     * @param batchSize       records per batch call
+     */
+    private void drainRotationBatches(UUID oldKeyVersionId, UUID newKeyVersionId, int batchSize) {
+        int maxBatches = rotationProperties.getBatch().getMaxBatchesPerRun();
+        int batchNum = 0;
+
+        while (true) {
+            if (Thread.currentThread().isInterrupted()) {
+                log.warn("Rotation drain interrupted after {} batch(es) on key [{}] — " +
+                        "will resume on next cron tick", batchNum, oldKeyVersionId);
+                return;
+            }
+
+            RotationBatchProcessor.BatchResult result =
+                    batchProcessor.processBatch(oldKeyVersionId, newKeyVersionId, batchSize);
+            batchNum++;
+
+            if (batchNum % 10 == 0 || result.totalFetched() == 0) {
+                log.info("Rotation drain batch {}: processed={}, failed={}, fetched={}",
+                        batchNum, result.processedCount(), result.failedCount(), result.totalFetched());
+            }
+
+            if (result.totalFetched() == 0) {
+                log.info("Rotation drain complete after {} batch(es) — no records remain on key [{}]",
+                        batchNum, oldKeyVersionId);
+                break;
+            }
+
+            if (maxBatches > 0 && batchNum >= maxBatches) {
+                log.info("Rotation drain paused after {} batch(es) (maxBatchesPerRun={}) — " +
+                        "will resume on next cron tick", batchNum, maxBatches);
+                break;
+            }
         }
     }
 

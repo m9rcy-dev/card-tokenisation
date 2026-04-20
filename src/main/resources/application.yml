@@ -53,6 +53,10 @@ rotation:
     size: 500
     # Smaller batches during emergency rotation for faster re-encryption
     emergency-size: 100
+    # Parallel virtual threads for DEK rewrap within one batch (must be ≤ hikari pool − 5)
+    parallelism: 8
+    # 0 = drain all remaining records in one cron invocation; positive = cap batches per tick
+    max-batches-per-run: 0
   compliance:
     max-key-age-days: 365
 

@@ -141,6 +141,38 @@
 
     <build>
         <plugins>
+            <!--
+                Fail fast with a clear message if Maven is not running on JDK 21.
+                Without this, using the wrong JDK produces a cryptic
+                "ExceptionInInitializerError: TypeTag :: UNKNOWN" from Lombok.
+                Use: JAVA_HOME=/opt/homebrew/opt/openjdk@21 mvn ...
+                Or:  make build  (Makefile always sets JAVA_HOME correctly)
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>enforce-java-21</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[21,22)</version>
+                                    <message>
+                                        *** This project requires JDK 21 (LTS). ***
+                                        Fix: JAVA_HOME=/opt/homebrew/opt/openjdk@21 mvn ...
+                                        Or use: make build  (Makefile sets JAVA_HOME automatically)
+                                        Check your active JDK: mvn --version
+                                    </message>
+                                </requireJavaVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -153,6 +185,23 @@
                             <version>${lombok.version}</version>
                         </path>
                     </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <!--
+                Exclude @Tag("load") from the standard mvn test run.
+                Load tests require Docker and significant time; they run only via:
+                  mvn test -P load-tests
+                  make load-test
+                Without this, load tests run in the normal suite, corrupt the shared
+                key ring / database state, and cause DetokenisationIntegrationTest
+                to return 500 on all subsequent tests in the same JVM.
+                (Gradle's default test task already excludes the load tag.)
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>load</excludedGroups>
                 </configuration>
             </plugin>
             <plugin>
@@ -229,6 +278,90 @@
                                 -Djdk.virtualThreadScheduler.maxPoolSize=512
                             </argLine>
                         </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Gatling simulation profile — runs against a *running* application instance.
+            The application must be started first (make start), then run simulations with:
+
+              make gatling-test [GATLING_SCALE=20k|50k|100k|1m] [GATLING_SIM=...Simulation]
+
+            Or directly:
+              mvn gatling:test -P gatling-tests -DbaseUrl=http://localhost:8080 -DtotalRequests=50000
+
+            Simulations live in src/gatling/java/ and are NOT Spring Boot tests — they drive
+            the HTTP API from the outside, so no Testcontainers or embedded context is used.
+            Database setup/teardown is handled by DbSetupHelper inside each simulation's
+            before() hook (direct JDBC connection using dbUrl/dbUser/dbPass system properties).
+
+            Scale variants: drive the same simulation class with -DtotalRequests=N
+              20k  → -DtotalRequests=20000
+              50k  → -DtotalRequests=50000
+              100k → -DtotalRequests=100000
+              1M   → -DtotalRequests=1000000
+        -->
+        <profile>
+            <id>gatling-tests</id>
+            <dependencies>
+                <dependency>
+                    <groupId>io.gatling.highcharts</groupId>
+                    <artifactId>gatling-charts-highcharts</artifactId>
+                    <version>3.10.5</version>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <!--
+                        Make src/gatling/java a test compile source root so that
+                        maven-compiler-plugin builds the Gatling Java simulations into
+                        target/test-classes alongside the rest of the test code.
+                        Without this, gatling-maven-plugin 4.x (which does NOT compile
+                        Java sources itself) finds no Simulation subclasses and reports
+                        "No simulations to run".
+                    -->
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>add-gatling-test-sources</id>
+                                <phase>generate-test-sources</phase>
+                                <goals>
+                                    <goal>add-test-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src/gatling/java</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>io.gatling</groupId>
+                        <artifactId>gatling-maven-plugin</artifactId>
+                        <version>4.9.6</version>
+                        <configuration>
+                            <!--
+                                Do NOT set simulationsFolder — that is for Scala/Kotlin sources
+                                and causes the plugin to ignore compiled Java classes on the
+                                test classpath. Java simulations are compiled by maven-compiler-plugin
+                                (via build-helper above) and found via classpath scanning.
+                            -->
+                            <resultsFolder>target/gatling</resultsFolder>
+                            <!-- simulationClass overridden per-invocation via -DsimulationClass=... -->
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>test</goal>
+                                </goals>
+                            </execution>
+                        </executions>
                     </plugin>
                 </plugins>
             </build>
