@@ -252,6 +252,25 @@ class KeyRotationServiceTest {
                 .hasMessageContaining(ACTIVE_KEY_ID.toString());
     }
 
+    // ── getActiveKeyVersionId ─────────────────────────────────────────────────
+
+    @Test
+    void getActiveKeyVersionId_activeKeyExists_returnsItsUuid() {
+        KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeKey);
+
+        assertThat(service.getActiveKeyVersionId()).isEqualTo(ACTIVE_KEY_ID);
+    }
+
+    @Test
+    void getActiveKeyVersionId_noActiveKey_propagatesIllegalStateException() {
+        when(keyVersionRepository.findActiveOrThrow())
+                .thenThrow(new IllegalStateException("No ACTIVE key version found"));
+
+        assertThatThrownBy(() -> service.getActiveKeyVersionId())
+                .isInstanceOf(IllegalStateException.class);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private KeyVersion buildKeyVersion(UUID id, KeyStatus status) {

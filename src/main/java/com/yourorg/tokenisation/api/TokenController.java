@@ -1,5 +1,6 @@
 package com.yourorg.tokenisation.api;
 
+import com.yourorg.tokenisation.api.request.CardReplacementRequest;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
@@ -15,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -103,6 +105,38 @@ public class TokenController {
             @PathVariable String token) {
         log.debug("Detokenise request received");
         return detokenisationService.detokenise(token);
+    }
+
+    /**
+     * Replaces the PAN bound to an existing token with a new card's PAN.
+     *
+     * <p>Use when a customer's card is replaced (lost/stolen, renewal, upgrade).
+     * The token value is unchanged — all downstream systems that hold this token
+     * continue to work with no changes. Subsequent detokenisation returns the
+     * new card's PAN.
+     *
+     * <p>Returns 409 if the new PAN already has a different active token in the vault.
+     *
+     * @param token   the existing opaque token to rebind
+     * @param request the new card's PAN and metadata
+     * @return updated token metadata (last four, card scheme, creation timestamp); no PAN
+     */
+    @PatchMapping("/{token}")
+    @Operation(summary = "Replace the card behind a token",
+            description = "Rebinds an existing token to a new card PAN. "
+                    + "The token value is unchanged — downstream systems require no updates.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Card replaced successfully"),
+            @ApiResponse(responseCode = "400", description = "Validation failure or invalid PAN"),
+            @ApiResponse(responseCode = "404", description = "Token not found or inactive"),
+            @ApiResponse(responseCode = "409", description = "New PAN already has a different active token")
+    })
+    public TokeniseResponse replaceCard(
+            @Parameter(description = "Opaque token value to rebind", required = true)
+            @PathVariable String token,
+            @Valid @RequestBody CardReplacementRequest request) {
+        log.debug("Card replacement request received");
+        return tokenisationService.replaceCard(token, request);
     }
 
     /**

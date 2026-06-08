@@ -92,32 +92,37 @@ public class TokenVault {
 
     /**
      * HMAC-SHA256 of the PAN using a hashing secret separate from the KEK.
-     * Used exclusively for de-duplication of {@code RECURRING} tokens.
-     * Does not allow PAN recovery.
+     * Used for de-duplication lookup. Does not allow PAN recovery.
+     * Updated during card replacement ({@link #replacePanFields}).
      */
-    @Column(name = "pan_hash", nullable = false, updatable = false)
+    @Column(name = "pan_hash", nullable = false)
     private String panHash;
 
     /**
      * Last four digits of the PAN, stored in clear.
      * Not sensitive — used for display purposes (e.g. "Card ending in 1111").
+     * Updated during card replacement ({@link #replacePanFields}).
      */
-    @Column(name = "last_four", nullable = false, updatable = false, length = 4)
+    @Column(name = "last_four", nullable = false, length = 4)
     private String lastFour;
 
     /**
-     * Payment card scheme (e.g. {@code VISA}, {@code MC}, {@code AMEX}, {@code EFTPOS}).
-     * Stored in clear for routing and display. May be {@code null} if unknown.
+     * Payment card scheme (e.g. {@code MC}).
+     * Stored in clear for display. Updated during card replacement ({@link #replacePanFields}).
      */
-    @Column(name = "card_scheme", updatable = false, length = 10)
+    @Column(name = "card_scheme", length = 10)
     private String cardScheme;
 
-    /** Card expiry month (1–12). May be {@code null} if not provided at tokenise time. */
-    @Column(name = "expiry_month", updatable = false)
+    /**
+     * Card expiry month (1–12). Updated during card replacement ({@link #replacePanFields}).
+     */
+    @Column(name = "expiry_month")
     private Short expiryMonth;
 
-    /** Card expiry year (e.g. 2027). May be {@code null} if not provided at tokenise time. */
-    @Column(name = "expiry_year", updatable = false)
+    /**
+     * Card expiry year (e.g. 2027). Updated during card replacement ({@link #replacePanFields}).
+     */
+    @Column(name = "expiry_year")
     private Short expiryYear;
 
     /** Timestamp when this token was created. */
@@ -215,6 +220,56 @@ public class TokenVault {
      */
     public void deactivate() {
         this.isActive = false;
+    }
+
+    /**
+     * Replaces all PAN-related fields with data for a new card.
+     *
+     * <p>Used when a customer's card is replaced (lost/stolen, renewal, upgrade).
+     * The token value, token ID, and creation timestamp are unchanged — downstream
+     * systems continue using the same token with no updates required.
+     *
+     * <p>A fresh DEK and IV are expected in the caller's {@code EncryptResult},
+     * consistent with the principle that key material is never reused across
+     * different plaintext values. The {@code keyVersion} is updated to the
+     * currently active version, so card replacement also migrates the record
+     * to the latest key.
+     *
+     * @param newEncryptedPan  AES-256-GCM ciphertext of the new PAN
+     * @param newIv            12-byte GCM IV generated fresh for this encryption
+     * @param newAuthTag       16-byte GCM authentication tag
+     * @param newEncryptedDek  DEK wrapped under the active KEK
+     * @param newKeyVersion    key version whose KEK was used to wrap the new DEK
+     * @param newPanHash       HMAC-SHA256 of the new PAN for de-duplication
+     * @param newLastFour      last four digits of the new PAN (stored in clear)
+     * @param newCardScheme    payment scheme of the new card
+     * @param newExpiryMonth   expiry month of the new card
+     * @param newExpiryYear    expiry year of the new card
+     * @param newExpiresAt     new token expiry timestamp
+     */
+    public void replacePanFields(
+            byte[] newEncryptedPan,
+            byte[] newIv,
+            byte[] newAuthTag,
+            byte[] newEncryptedDek,
+            KeyVersion newKeyVersion,
+            String newPanHash,
+            String newLastFour,
+            String newCardScheme,
+            Short newExpiryMonth,
+            Short newExpiryYear,
+            Instant newExpiresAt) {
+        this.encryptedPan = newEncryptedPan.clone();
+        this.iv = newIv.clone();
+        this.authTag = newAuthTag.clone();
+        this.encryptedDek = newEncryptedDek.clone();
+        this.keyVersion = newKeyVersion;
+        this.panHash = newPanHash;
+        this.lastFour = newLastFour;
+        this.cardScheme = newCardScheme;
+        this.expiryMonth = newExpiryMonth;
+        this.expiryYear = newExpiryYear;
+        this.expiresAt = newExpiresAt;
     }
 
     /**

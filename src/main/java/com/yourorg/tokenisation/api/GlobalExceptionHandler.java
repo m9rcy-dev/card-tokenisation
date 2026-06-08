@@ -1,5 +1,6 @@
 package com.yourorg.tokenisation.api;
 
+import com.yourorg.tokenisation.exception.CardAlreadyTokenisedException;
 import com.yourorg.tokenisation.exception.PanValidationException;
 import com.yourorg.tokenisation.exception.RateLimitExceededException;
 import com.yourorg.tokenisation.exception.TokenNotFoundException;
@@ -7,9 +8,11 @@ import com.yourorg.tokenisation.exception.TokenisationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URI;
 import java.util.stream.Collectors;
@@ -36,8 +39,43 @@ public class GlobalExceptionHandler {
 
     private static final URI TYPE_VALIDATION = URI.create("urn:tokenisation:error:validation");
     private static final URI TYPE_NOT_FOUND = URI.create("urn:tokenisation:error:not-found");
+    private static final URI TYPE_CONFLICT = URI.create("urn:tokenisation:error:conflict");
     private static final URI TYPE_RATE_LIMITED = URI.create("urn:tokenisation:error:rate-limited");
     private static final URI TYPE_INTERNAL = URI.create("urn:tokenisation:error:internal");
+
+    /**
+     * Handles malformed or unparseable request bodies (e.g. invalid UUID format).
+     *
+     * <p>Returns 400. The raw parse error is not exposed to avoid leaking internal details.
+     *
+     * @param exception the message conversion failure
+     * @return a 400 Problem Detail
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail handleHttpMessageNotReadableException(HttpMessageNotReadableException exception) {
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, "Request body is invalid or malformed");
+        problemDetail.setType(TYPE_VALIDATION);
+        problemDetail.setTitle("Invalid request body");
+        return problemDetail;
+    }
+
+    /**
+     * Handles invalid argument errors from the service layer (e.g. unknown compromisedVersionId).
+     *
+     * <p>Returns 400. The exception message is included as it is expected to be safe to expose.
+     *
+     * @param exception the illegal argument exception
+     * @return a 400 Problem Detail
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ProblemDetail handleIllegalArgumentException(IllegalArgumentException exception) {
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, exception.getMessage());
+        problemDetail.setType(TYPE_VALIDATION);
+        problemDetail.setTitle("Invalid argument");
+        return problemDetail;
+    }
 
     /**
      * Handles Bean Validation failures from {@code @Valid} on request bodies.
@@ -95,6 +133,24 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles card replacement conflicts — the new PAN already has a different active token.
+     *
+     * <p>Returns 409 to signal that the caller must resolve the conflict (e.g. revoke
+     * the existing token for the new PAN first) before the replacement can proceed.
+     *
+     * @param exception the conflict exception
+     * @return a 409 Problem Detail
+     */
+    @ExceptionHandler(CardAlreadyTokenisedException.class)
+    public ProblemDetail handleCardAlreadyTokenisedException(CardAlreadyTokenisedException exception) {
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT, exception.getMessage());
+        problemDetail.setType(TYPE_CONFLICT);
+        problemDetail.setTitle("Card already tokenised");
+        return problemDetail;
+    }
+
+    /**
      * Handles rate limit violations from the detokenisation interceptor.
      *
      * <p>Returns 429 with the limit type and threshold in the detail. The {@code Retry-After}
@@ -128,6 +184,24 @@ public class GlobalExceptionHandler {
                 HttpStatus.INTERNAL_SERVER_ERROR, "An internal error occurred");
         problemDetail.setType(TYPE_INTERNAL);
         problemDetail.setTitle("Internal server error");
+        return problemDetail;
+    }
+
+    /**
+     * Forwards {@link ResponseStatusException} using its own embedded status code and reason.
+     *
+     * <p>Used by the admin rotation controller to signal 400 for missing required fields.
+     * Without this handler, the generic {@link Exception} catch-all would return 500.
+     *
+     * @param exception the response-status exception carrying the intended HTTP status
+     * @return a Problem Detail with the exception's own status code
+     */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ProblemDetail handleResponseStatusException(ResponseStatusException exception) {
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
+                exception.getStatusCode(), exception.getReason());
+        problemDetail.setType(TYPE_VALIDATION);
+        problemDetail.setTitle("Request error");
         return problemDetail;
     }
 

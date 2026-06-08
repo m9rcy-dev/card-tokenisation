@@ -1,7 +1,7 @@
 meta {
-  name: Tokenise - 400 missing PAN
+  name: Setup - tokenise original PAN to enable conflict test
   type: http
-  seq: 12
+  seq: 5
 }
 
 post {
@@ -16,12 +16,13 @@ headers {
 
 body:json {
   {
-    "expiryMonth": 12,
-    "expiryYear": 2027,
+    "pan": "5500005555555559",
+    "expiryMonth": 6,
+    "expiryYear": 2028,
     "cardScheme": "MC"
   }
 }
 
 assert {
-  res.status: eq 400
+  res.status: eq 201
 }

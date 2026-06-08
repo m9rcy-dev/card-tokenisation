@@ -37,6 +37,12 @@ public enum AuditEventType {
     TOKEN_REVOKED,
 
     /**
+     * A replacement card's PAN was bound to an existing token.
+     * The token value is unchanged; downstream systems require no updates.
+     */
+    CARD_REPLACED,
+
+    /**
      * Ciphertext or authentication tag tampering was detected during decryption.
      * GCM authentication tag verification failed — the stored ciphertext was modified outside the application.
      */

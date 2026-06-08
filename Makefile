@@ -61,7 +61,7 @@ export KMS_LOCAL_DEV_KEK_HEX   := 000102030405060708090a0b0c0d0e0f10111213141516
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test load-test results start stop-postgres start-postgres db-migrate clean gradle-wrapper
+.PHONY: help build test load-test results start stop-postgres start-postgres db-migrate clean gradle-wrapper bruno-run bruno-run-admin
 
 ## help: show this message
 help:
@@ -127,6 +127,26 @@ start: db-migrate
 ## clean: remove build artifacts
 clean:
 	$(_BUILD) $(_CMD_clean)
+
+## bruno-run: run token API smoke tests (requires: make start)
+bruno-run:
+	@command -v bru >/dev/null 2>&1 || { \
+		echo "Bruno CLI not found. Install with: npm install -g @usebruno/cli"; exit 1; \
+	}
+	@curl -sf http://localhost:8080/api/v1/health > /dev/null 2>&1 || { \
+		echo "App is not running. Start it first with: make start"; exit 1; \
+	}
+	cd bruno/card-tokenisation-api && bru run tokens --env local -r
+
+## bruno-run-admin: run admin key rotation smoke tests (requires: make start; set compromisedKeyVersionId in bruno env for emergency rotation)
+bruno-run-admin:
+	@command -v bru >/dev/null 2>&1 || { \
+		echo "Bruno CLI not found. Install with: npm install -g @usebruno/cli"; exit 1; \
+	}
+	@curl -sf http://localhost:8080/api/v1/health > /dev/null 2>&1 || { \
+		echo "App is not running. Start it first with: make start"; exit 1; \
+	}
+	cd bruno/card-tokenisation-api && bru run admin --env local -r
 
 ## gradle-wrapper: generate gradlew and gradlew.bat (requires Gradle installed locally, run once)
 gradle-wrapper:

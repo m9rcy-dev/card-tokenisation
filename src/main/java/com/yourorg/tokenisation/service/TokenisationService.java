@@ -1,5 +1,6 @@
 package com.yourorg.tokenisation.service;
 
+import com.yourorg.tokenisation.api.request.CardReplacementRequest;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
 import com.yourorg.tokenisation.audit.AuditEventType;
@@ -11,6 +12,7 @@ import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.crypto.PanHasher;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.TokenVault;
+import com.yourorg.tokenisation.exception.CardAlreadyTokenisedException;
 import com.yourorg.tokenisation.exception.PanValidationException;
 import com.yourorg.tokenisation.exception.TokenNotFoundException;
 import com.yourorg.tokenisation.exception.TokenisationException;
@@ -149,6 +151,88 @@ public class TokenisationService {
 
         log.debug("Token revoked: [{}]", vault.getTokenId());
         auditLogger.logSuccess(AuditEventType.TOKEN_REVOKED, vault.getTokenId(), null, null, null);
+    }
+
+    /**
+     * Replaces the PAN bound to an existing token with the PAN of a replacement card.
+     *
+     * <p>The token value is unchanged. All PAN-related fields in the vault record are
+     * re-encrypted with a fresh DEK and IV under the currently active KEK. Downstream
+     * systems that already hold the token require no updates.
+     *
+     * <p>Returns 409 if the new PAN already has a different active token in the vault,
+     * preserving the one-PAN-one-active-token invariant. Returns 200 if the new PAN
+     * matches the current card (identity replacement — harmless re-encryption).
+     *
+     * @param token   the existing opaque token value to update; must not be null
+     * @param request the new card's PAN and metadata; must not be null
+     * @return token response with updated last four, card scheme, and creation timestamp
+     * @throws TokenNotFoundException         if the token is not found or is inactive
+     * @throws CardAlreadyTokenisedException  if the new PAN already has a different active token
+     * @throws PanValidationException         if the new PAN fails Luhn or format checks
+     * @throws TokenisationException          if encryption fails or the key ring has no active key
+     */
+    @Transactional
+    public TokeniseResponse replaceCard(String token, CardReplacementRequest request) {
+        Objects.requireNonNull(token, "token must not be null");
+        Objects.requireNonNull(request, "CardReplacementRequest must not be null");
+
+        validatePan(request.getPan());
+
+        String newPanHash = panHasher.hash(request.getPan());
+
+        TokenVault vault = tokenVaultRepository.findActiveByToken(token)
+                .orElseThrow(() -> new TokenNotFoundException(token));
+
+        tokenVaultRepository.findActiveByPanHash(newPanHash).ifPresent(existing -> {
+            if (!existing.getToken().equals(vault.getToken())) {
+                throw new CardAlreadyTokenisedException(
+                        "The new PAN already has an active token in the vault");
+            }
+        });
+
+        try {
+            KeyMaterial activeKeyMaterial = keyRing.getActive();
+            KeyVersion activeKeyVersion = keyVersionRepository.findActiveOrThrow();
+
+            byte[] kek = activeKeyMaterial.copyKek();
+            byte[] panBytes = request.getPan().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            try {
+                EncryptResult encryptResult = cipher.encrypt(panBytes, kek);
+
+                String newLastFour = request.getPan().substring(request.getPan().length() - 4);
+                Instant newExpiresAt = Instant.now().plus(defaultTokenTtlDays, java.time.temporal.ChronoUnit.DAYS);
+
+                vault.replacePanFields(
+                        encryptResult.ciphertext(),
+                        encryptResult.iv(),
+                        encryptResult.authTag(),
+                        encryptResult.encryptedDek(),
+                        activeKeyVersion,
+                        newPanHash,
+                        newLastFour,
+                        request.getCardScheme(),
+                        request.getExpiryMonth() != null ? request.getExpiryMonth().shortValue() : null,
+                        request.getExpiryYear() != null ? request.getExpiryYear().shortValue() : null,
+                        newExpiresAt);
+
+                tokenVaultRepository.save(vault);
+
+                log.debug("Card replaced on token [{}]", vault.getTokenId());
+                auditLogger.logSuccess(AuditEventType.CARD_REPLACED, vault.getTokenId(), null, null, null);
+
+                return buildResponse(vault);
+            } finally {
+                Arrays.fill(kek, (byte) 0);
+                Arrays.fill(panBytes, (byte) 0);
+            }
+        } catch (CardAlreadyTokenisedException | TokenNotFoundException | PanValidationException e) {
+            throw e;
+        } catch (TokenisationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new TokenisationException("Card replacement failed due to an internal error", e);
+        }
     }
 
     // ── Private — tokenisation steps ─────────────────────────────────────────

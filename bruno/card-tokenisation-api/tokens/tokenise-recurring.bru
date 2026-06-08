@@ -1,7 +1,7 @@
 meta {
   name: Tokenise PAN
   type: http
-  seq: 2
+  seq: 1
 }
 
 post {
@@ -26,7 +26,7 @@ body:json {
 assert {
   res.status: eq 201
   res.body.token: isDefined
-  res.body.lastFour: eq 5559
+  res.body.lastFour: eq "5559"
   res.body.cardScheme: eq MC
 }
 

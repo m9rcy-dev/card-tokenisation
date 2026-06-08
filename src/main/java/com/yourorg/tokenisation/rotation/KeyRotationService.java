@@ -220,6 +220,20 @@ public class KeyRotationService {
                 compromisedVersionId, newKey.getId());
     }
 
+    /**
+     * Returns the UUID of the currently active key version.
+     *
+     * <p>Used by admin tooling to discover the active key before initiating
+     * an emergency rotation.
+     *
+     * @return the active key version UUID
+     * @throws IllegalStateException if no active key version exists
+     */
+    @Transactional(readOnly = true)
+    public UUID getActiveKeyVersionId() {
+        return keyVersionRepository.findActiveOrThrow().getId();
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /**

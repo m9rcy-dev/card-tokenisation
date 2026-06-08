@@ -1,0 +1,18 @@
+meta {
+  name: Setup - fetch active key version for emergency rotation
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/v1/admin/keys/active
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+script:post-response {
+  bru.setVar("compromisedKeyVersionId", res.body.activeVersionId);
+}

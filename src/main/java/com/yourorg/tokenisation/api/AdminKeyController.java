@@ -1,6 +1,7 @@
 package com.yourorg.tokenisation.api;
 
 import com.yourorg.tokenisation.api.request.RotateKeyRequest;
+import com.yourorg.tokenisation.api.response.ActiveKeyResponse;
 import com.yourorg.tokenisation.domain.RotationReason;
 import com.yourorg.tokenisation.rotation.KeyRotationService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -10,6 +11,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -55,6 +57,28 @@ public class AdminKeyController {
      */
     public AdminKeyController(KeyRotationService keyRotationService) {
         this.keyRotationService = keyRotationService;
+    }
+
+    /**
+     * Returns the UUID of the currently active key version.
+     *
+     * <p>Intended for admin tooling and smoke tests that need to reference the active key
+     * (e.g. when constructing a COMPROMISE rotation request).
+     *
+     * @return the active key version UUID
+     */
+    @GetMapping("/active")
+    @Operation(summary = "Get active key version",
+            description = "Returns the UUID of the currently active KEK version. "
+                    + "**Admin access only — must be protected in production.**")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Active key version returned"),
+            @ApiResponse(responseCode = "500", description = "No active key version found")
+    })
+    public ActiveKeyResponse getActive() {
+        return ActiveKeyResponse.builder()
+                .activeVersionId(keyRotationService.getActiveKeyVersionId())
+                .build();
     }
 
     /**
