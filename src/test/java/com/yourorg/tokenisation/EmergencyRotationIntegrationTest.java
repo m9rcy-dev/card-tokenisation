@@ -7,7 +7,6 @@ import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
 import com.yourorg.tokenisation.crypto.TamperDetector;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
-import com.yourorg.tokenisation.domain.TokenType;
 import com.yourorg.tokenisation.kms.KmsProvider;
 import com.yourorg.tokenisation.repository.AuditLogRepository;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
@@ -18,9 +17,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -49,7 +45,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
 
-    private static final String MERCHANT_A = "MERCHANT_EMRG";
     private static final String VISA_PAN   = "4111111111111111";
     private static final String MC_PAN     = "5500005555555559";
 
@@ -90,7 +85,7 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void emergencyRotation_compromisedKey_immediatelyBlocksDetokenisation() {
-        String token = tokenise(VISA_PAN, TokenType.ONE_TIME);
+        String token = tokenise(VISA_PAN);
         UUID compromisedKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
 
         keyRotationService.initiateEmergencyRotation(compromisedKeyId, "emergency-key-v2");
@@ -127,8 +122,8 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
     @Test
     void emergencyRotation_afterBatchReencryption_detokenisationRestored() {
         List<String> tokens = List.of(
-                tokenise(VISA_PAN, TokenType.ONE_TIME),
-                tokenise(MC_PAN, TokenType.ONE_TIME));
+                tokenise(VISA_PAN),
+                tokenise(MC_PAN));
         UUID compromisedKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
 
         keyRotationService.initiateEmergencyRotation(compromisedKeyId, "emergency-key-v2");
@@ -146,7 +141,7 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void emergencyRotation_afterBatch_oldKeyRetired() {
-        tokenise(VISA_PAN, TokenType.ONE_TIME);
+        tokenise(VISA_PAN);
         UUID compromisedKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
 
         keyRotationService.initiateEmergencyRotation(compromisedKeyId, "emergency-key-v2");
@@ -164,7 +159,7 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
         keyRotationService.initiateEmergencyRotation(compromisedKeyId, "emergency-key-v2");
 
         // Tokenise after emergency rotation — must use new ACTIVE key
-        String newToken = tokenise(VISA_PAN, TokenType.ONE_TIME);
+        String newToken = tokenise(VISA_PAN);
 
         assertThat(tokenVaultRepository.findActiveByToken(newToken).orElseThrow()
                 .getKeyVersion().getId())
@@ -177,7 +172,7 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
         keyRotationService.initiateEmergencyRotation(compromisedKeyId, "emergency-key-v2");
         rotationJob.processRotationBatch();
 
-        String newToken = tokenise(VISA_PAN, TokenType.ONE_TIME);
+        String newToken = tokenise(VISA_PAN);
         ResponseEntity<DetokeniseResponse> response = detokenise(newToken);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -202,11 +197,9 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    private String tokenise(String pan, TokenType tokenType) {
+    private String tokenise(String pan) {
         TokeniseRequest request = new TokeniseRequest();
         request.setPan(pan);
-        request.setTokenType(tokenType);
-        request.setMerchantId(MERCHANT_A);
         request.setCardScheme("VISA");
         request.setExpiryMonth(12);
         request.setExpiryYear(2027);
@@ -221,12 +214,6 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
     }
 
     private <T> ResponseEntity<T> detokeniseRaw(String token, Class<T> responseType) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("X-Merchant-ID", MERCHANT_A);
-        return restTemplate.exchange(
-                "/api/v1/tokens/" + token,
-                HttpMethod.GET,
-                new HttpEntity<>(headers),
-                responseType);
+        return restTemplate.getForEntity("/api/v1/tokens/" + token, responseType);
     }
 }

@@ -2,8 +2,6 @@ package com.yourorg.tokenisation.domain;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -28,8 +26,8 @@ import java.util.UUID;
  * per-record IV ({@code iv}), the GCM authentication tag ({@code authTag}), and
  * the KEK-wrapped DEK ({@code encryptedDek}) are persisted.
  *
- * <p>{@code panHash} is an HMAC-SHA256 of the PAN used solely for de-duplication
- * of {@code RECURRING} tokens. It does not allow PAN recovery.
+ * <p>{@code panHash} is an HMAC-SHA256 of the PAN used for de-duplication.
+ * It does not allow PAN recovery.
  *
  * <p>{@code recordVersion} is used for optimistic locking during key rotation
  * re-encryption. A rotation update that encounters a stale version is retried.
@@ -100,11 +98,6 @@ public class TokenVault {
     @Column(name = "pan_hash", nullable = false, updatable = false)
     private String panHash;
 
-    /** Whether this token is for recurring billing (deterministic) or one-off payment (non-deterministic). */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "token_type", nullable = false, updatable = false)
-    private TokenType tokenType;
-
     /**
      * Last four digits of the PAN, stored in clear.
      * Not sensitive — used for display purposes (e.g. "Card ending in 1111").
@@ -126,14 +119,6 @@ public class TokenVault {
     /** Card expiry year (e.g. 2027). May be {@code null} if not provided at tokenise time. */
     @Column(name = "expiry_year", updatable = false)
     private Short expiryYear;
-
-    /**
-     * Scopes this token to a specific merchant.
-     * Detokenisation requests from a different merchant are rejected with a 403.
-     * Extracted from authenticated JWT claims — never sourced from the request body.
-     */
-    @Column(name = "merchant_id", updatable = false)
-    private String merchantId;
 
     /** Timestamp when this token was created. */
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -172,12 +157,10 @@ public class TokenVault {
      * @param encryptedDek   DEK wrapped by the active KEK
      * @param keyVersion     the key version whose KEK wrapped the DEK
      * @param panHash        HMAC-SHA256 of the PAN for de-duplication
-     * @param tokenType      {@code RECURRING} or {@code ONE_TIME}
      * @param lastFour       last four digits of the PAN (stored in clear)
      * @param cardScheme     payment scheme (may be {@code null})
      * @param expiryMonth    card expiry month (may be {@code null})
      * @param expiryYear     card expiry year (may be {@code null})
-     * @param merchantId     merchant scope (may be {@code null} for global tokens)
      * @param createdAt      creation timestamp
      * @param expiresAt      optional token expiry (may be {@code null})
      */
@@ -190,12 +173,10 @@ public class TokenVault {
             byte[] encryptedDek,
             KeyVersion keyVersion,
             String panHash,
-            TokenType tokenType,
             String lastFour,
             String cardScheme,
             Short expiryMonth,
             Short expiryYear,
-            String merchantId,
             Instant createdAt,
             Instant expiresAt) {
         this.token = token;
@@ -205,12 +186,10 @@ public class TokenVault {
         this.encryptedDek = encryptedDek.clone();
         this.keyVersion = keyVersion;
         this.panHash = panHash;
-        this.tokenType = tokenType;
         this.lastFour = lastFour;
         this.cardScheme = cardScheme;
         this.expiryMonth = expiryMonth;
         this.expiryYear = expiryYear;
-        this.merchantId = merchantId;
         this.createdAt = createdAt;
         this.expiresAt = expiresAt;
         this.isActive = true;

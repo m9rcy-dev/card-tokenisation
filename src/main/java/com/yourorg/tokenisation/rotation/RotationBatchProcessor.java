@@ -184,7 +184,6 @@ public class RotationBatchProcessor {
                                 vault.getTokenId(),
                                 null,
                                 null,
-                                null,
                                 "Re-encryption failed: " + tokenException.getClass().getSimpleName()
                                         + " — " + tokenException.getMessage(),
                                 null);
@@ -246,7 +245,6 @@ public class RotationBatchProcessor {
                 auditLogger.logSuccess(
                         AuditEventType.TOKEN_REENCRYPTED,
                         vault.getTokenId(),
-                        null,
                         null,
                         null,
                         null);

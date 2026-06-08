@@ -8,7 +8,6 @@ import ch.qos.logback.core.read.ListAppender;
 import com.yourorg.tokenisation.AbstractIntegrationTest;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.domain.TokenType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -83,7 +82,7 @@ class PanNeverInLogsTest extends AbstractIntegrationTest {
 
     @Test
     void tokenise_happyPath_panNeverAppearsInAnyLogMessage() {
-        TokeniseRequest request = buildRequest(VISA_PAN, TokenType.ONE_TIME, "MERCHANT_A");
+        TokeniseRequest request = buildRequest(VISA_PAN);
 
         postTokenise(request);
 
@@ -92,7 +91,7 @@ class PanNeverInLogsTest extends AbstractIntegrationTest {
 
     @Test
     void tokenise_recurringDedup_panNeverAppearsInAnyLogMessage() {
-        TokeniseRequest request = buildRequest(VISA_PAN, TokenType.RECURRING, "MERCHANT_A");
+        TokeniseRequest request = buildRequest(VISA_PAN);
 
         postTokenise(request);
         postTokenise(request); // second call triggers de-dup path
@@ -102,7 +101,7 @@ class PanNeverInLogsTest extends AbstractIntegrationTest {
 
     @Test
     void tokenise_luhnInvalidPan_panNeverAppearsInAnyLogMessage() {
-        TokeniseRequest request = buildRequest(LUHN_INVALID_PAN, TokenType.ONE_TIME, "MERCHANT_A");
+        TokeniseRequest request = buildRequest(LUHN_INVALID_PAN);
 
         restTemplate.postForEntity("/api/v1/tokens", request, String.class);
 
@@ -219,11 +218,9 @@ class PanNeverInLogsTest extends AbstractIntegrationTest {
         return restTemplate.postForEntity("/api/v1/tokens", request, TokeniseResponse.class);
     }
 
-    private TokeniseRequest buildRequest(String pan, TokenType tokenType, String merchantId) {
+    private TokeniseRequest buildRequest(String pan) {
         TokeniseRequest request = new TokeniseRequest();
         request.setPan(pan);
-        request.setTokenType(tokenType);
-        request.setMerchantId(merchantId);
         request.setCardScheme("VISA");
         request.setExpiryMonth(12);
         request.setExpiryYear(2027);

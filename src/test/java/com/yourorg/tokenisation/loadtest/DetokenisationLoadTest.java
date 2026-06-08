@@ -3,15 +3,11 @@ package com.yourorg.tokenisation.loadtest;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.domain.TokenType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -37,8 +33,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("load")
 class DetokenisationLoadTest extends AbstractLoadTest {
-
-    private static final String MERCHANT = "LOAD_MERCHANT_DET";
 
     @Autowired private TestRestTemplate restTemplate;
     @Autowired private JdbcTemplate jdbcTemplate;
@@ -102,7 +96,7 @@ class DetokenisationLoadTest extends AbstractLoadTest {
             executor.submit(() -> {
                 long t0 = System.currentTimeMillis();
                 try {
-                    ResponseEntity<DetokeniseResponse> resp = detokenise(token, MERCHANT);
+                    ResponseEntity<DetokeniseResponse> resp = detokenise(token);
                     if (!resp.getStatusCode().is2xxSuccessful()) {
                         errorCount.incrementAndGet();
                     }
@@ -174,21 +168,13 @@ class DetokenisationLoadTest extends AbstractLoadTest {
         return tokens;
     }
 
-    private ResponseEntity<DetokeniseResponse> detokenise(String token, String merchantId) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("X-Merchant-ID", merchantId);
-        return restTemplate.exchange(
-                "/api/v1/tokens/" + token,
-                HttpMethod.GET,
-                new HttpEntity<>(headers),
-                DetokeniseResponse.class);
+    private ResponseEntity<DetokeniseResponse> detokenise(String token) {
+        return restTemplate.getForEntity("/api/v1/tokens/" + token, DetokeniseResponse.class);
     }
 
     private TokeniseRequest buildRequest(String pan) {
         TokeniseRequest r = new TokeniseRequest();
         r.setPan(pan);
-        r.setTokenType(TokenType.ONE_TIME);
-        r.setMerchantId(MERCHANT);
         r.setCardScheme("VISA");
         r.setExpiryMonth(12);
         r.setExpiryYear(2027);

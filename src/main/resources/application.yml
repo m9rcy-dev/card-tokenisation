@@ -40,10 +40,12 @@ tokenisation:
   tamper-detection:
     # HMAC-SHA256 signing secret for key_versions row integrity checks — separate from KEK and PAN hash secret
     signing-secret: ${TAMPER_DETECTION_SECRET}
+  # Accepted card scheme codes — add entries here to enable additional schemes without code changes
+  allowed-card-schemes:
+    - MC
 
 detokenisation:
   rate-limit:
-    per-merchant-per-minute: 1000
     per-service-per-minute: 10000
 
 rotation:

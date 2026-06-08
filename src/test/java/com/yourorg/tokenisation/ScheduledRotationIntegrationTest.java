@@ -8,7 +8,6 @@ import com.yourorg.tokenisation.crypto.TamperDetector;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.RotationReason;
-import com.yourorg.tokenisation.domain.TokenType;
 import com.yourorg.tokenisation.kms.KmsProvider;
 import com.yourorg.tokenisation.repository.AuditLogRepository;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
@@ -19,9 +18,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -63,7 +59,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
 
-    private static final String MERCHANT_A = "MERCHANT_ROT";
     private static final String VISA_PAN   = "4111111111111111";
     private static final String MC_PAN     = "5500005555555559";
 
@@ -137,8 +132,8 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void scheduledRotation_afterBatch_allTokensMigratedToNewKey() {
-        String token1 = tokenise(VISA_PAN, TokenType.ONE_TIME);
-        String token2 = tokenise(MC_PAN, TokenType.ONE_TIME);
+        String token1 = tokenise(VISA_PAN);
+        String token2 = tokenise(MC_PAN);
 
         UUID oldKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
         keyRotationService.initiateScheduledRotation("test-key-v2", RotationReason.SCHEDULED);
@@ -155,7 +150,7 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void scheduledRotation_afterBatch_oldKeyRetired() {
-        tokenise(VISA_PAN, TokenType.ONE_TIME);
+        tokenise(VISA_PAN);
         UUID oldKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
 
         keyRotationService.initiateScheduledRotation("test-key-v2", RotationReason.SCHEDULED);
@@ -181,9 +176,9 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
     @Test
     void scheduledRotation_preRotationTokens_remainDetokenisableAfterRotation() {
         List<String> tokens = new ArrayList<>();
-        tokens.add(tokenise(VISA_PAN, TokenType.ONE_TIME));
-        tokens.add(tokenise(MC_PAN, TokenType.ONE_TIME));
-        tokens.add(tokenise(VISA_PAN, TokenType.RECURRING));
+        tokens.add(tokenise(VISA_PAN));
+        tokens.add(tokenise(MC_PAN));
+        tokens.add(tokenise(VISA_PAN));
 
         keyRotationService.initiateScheduledRotation("test-key-v2", RotationReason.SCHEDULED);
         rotationJob.processRotationBatch();
@@ -203,7 +198,7 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
         keyRotationService.initiateScheduledRotation("test-key-v2", RotationReason.SCHEDULED);
 
         // Tokenise after rotation — must use new ACTIVE key
-        String newToken = tokenise(VISA_PAN, TokenType.ONE_TIME);
+        String newToken = tokenise(VISA_PAN);
 
         assertThat(tokenVaultRepository.findActiveByToken(newToken).orElseThrow()
                 .getKeyVersion().getId())
@@ -216,7 +211,7 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
         rotationJob.processRotationBatch();
 
         // Tokenise a new token after rotation completes
-        String newToken = tokenise(VISA_PAN, TokenType.ONE_TIME);
+        String newToken = tokenise(VISA_PAN);
 
         ResponseEntity<DetokeniseResponse> response = detokenise(newToken);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -237,7 +232,7 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void scheduledRotation_afterBatch_writesKeyRotationCompletedAuditEvent() {
-        tokenise(VISA_PAN, TokenType.ONE_TIME);
+        tokenise(VISA_PAN);
         jdbcTemplate.execute("DELETE FROM token_audit_log");
 
         keyRotationService.initiateScheduledRotation("test-key-v2", RotationReason.SCHEDULED);
@@ -249,11 +244,9 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    private String tokenise(String pan, TokenType tokenType) {
+    private String tokenise(String pan) {
         TokeniseRequest request = new TokeniseRequest();
         request.setPan(pan);
-        request.setTokenType(tokenType);
-        request.setMerchantId(MERCHANT_A);
         request.setCardScheme("VISA");
         request.setExpiryMonth(12);
         request.setExpiryYear(2027);
@@ -264,12 +257,6 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
     }
 
     private ResponseEntity<DetokeniseResponse> detokenise(String token) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("X-Merchant-ID", MERCHANT_A);
-        return restTemplate.exchange(
-                "/api/v1/tokens/" + token,
-                HttpMethod.GET,
-                new HttpEntity<>(headers),
-                DetokeniseResponse.class);
+        return restTemplate.getForEntity("/api/v1/tokens/" + token, DetokeniseResponse.class);
     }
 }

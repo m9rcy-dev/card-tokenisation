@@ -1,6 +1,5 @@
 package com.yourorg.tokenisation.api;
 
-import com.yourorg.tokenisation.exception.MerchantScopeException;
 import com.yourorg.tokenisation.exception.PanValidationException;
 import com.yourorg.tokenisation.exception.RateLimitExceededException;
 import com.yourorg.tokenisation.exception.TokenNotFoundException;
@@ -23,7 +22,6 @@ import java.util.stream.Collectors;
  *   <li>{@link MethodArgumentNotValidException} — 400 (Bean Validation constraint failures)
  *   <li>{@link PanValidationException} — 400 (Luhn check or format failure)
  *   <li>{@link TokenNotFoundException} — 404
- *   <li>{@link MerchantScopeException} — 403
  *   <li>{@link TokenisationException} (any unmatched subtype) — 500
  *   <li>Unhandled {@link Exception} — 500
  * </ul>
@@ -38,7 +36,6 @@ public class GlobalExceptionHandler {
 
     private static final URI TYPE_VALIDATION = URI.create("urn:tokenisation:error:validation");
     private static final URI TYPE_NOT_FOUND = URI.create("urn:tokenisation:error:not-found");
-    private static final URI TYPE_FORBIDDEN = URI.create("urn:tokenisation:error:forbidden");
     private static final URI TYPE_RATE_LIMITED = URI.create("urn:tokenisation:error:rate-limited");
     private static final URI TYPE_INTERNAL = URI.create("urn:tokenisation:error:internal");
 
@@ -94,25 +91,6 @@ public class GlobalExceptionHandler {
                 HttpStatus.NOT_FOUND, exception.getMessage());
         problemDetail.setType(TYPE_NOT_FOUND);
         problemDetail.setTitle("Token not found");
-        return problemDetail;
-    }
-
-    /**
-     * Handles cross-merchant access violations.
-     *
-     * <p>Returns 403. The response body deliberately omits details about the
-     * true owner to avoid information leakage.
-     *
-     * @param exception the merchant scope exception
-     * @return a 403 Problem Detail
-     */
-    @ExceptionHandler(MerchantScopeException.class)
-    public ProblemDetail handleMerchantScopeException(MerchantScopeException exception) {
-        log.warn("Merchant scope violation: {}", exception.getMessage());
-        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
-                HttpStatus.FORBIDDEN, "Access denied");
-        problemDetail.setType(TYPE_FORBIDDEN);
-        problemDetail.setTitle("Forbidden");
         return problemDetail;
     }
 

@@ -10,9 +10,6 @@ get {
   auth: none
 }
 
-headers {
-  X-Merchant-ID: {{merchantId}}
-}
 
 assert {
   res.status: eq 404

@@ -88,12 +88,10 @@ public class TokenisationSimulation extends Simulation {
         return String.format("""
                 {
                   "pan": "%s",
-                  "tokenType": "ONE_TIME",
-                  "merchantId": "%s",
-                  "cardScheme": "VISA",
+                  "cardScheme": "MC",
                   "expiryMonth": 12,
                   "expiryYear": 2029
-                }""", pan, SimulationConfig.MERCHANT_ID);
+                }""", pan);
     }
 
     /**

@@ -1,6 +1,6 @@
 package com.yourorg.tokenisation.api.request;
 
-import com.yourorg.tokenisation.domain.TokenType;
+import com.yourorg.tokenisation.security.ValidCardScheme;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -58,29 +58,14 @@ public class TokeniseRequest {
     private Integer expiryYear;
 
     /**
-     * Card network scheme (e.g. {@code VISA}, {@code MASTERCARD}, {@code AMEX}).
+     * Card network scheme (e.g. {@code MC}).
      *
-     * <p>Stored as-is; no scheme-specific routing logic is performed by this service.
+     * <p>Must be present in the {@code tokenisation.allowed-card-schemes} allowlist.
+     * Stored as display metadata — no scheme-specific routing is performed.
      */
     @NotBlank(message = "Card scheme must not be blank")
+    @ValidCardScheme
     private String cardScheme;
-
-    /**
-     * Whether to issue a deterministic token (RECURRING) or a fresh one per call (ONE_TIME).
-     *
-     * @see TokenType
-     */
-    @NotNull(message = "Token type must not be null")
-    private TokenType tokenType;
-
-    /**
-     * The merchant identity under whose scope the token is created.
-     *
-     * <p>Tokens are scoped per merchant — a token created for merchant A cannot be
-     * detokenised by merchant B.
-     */
-    @NotBlank(message = "Merchant ID must not be blank")
-    private String merchantId;
 
     /**
      * Returns a safe string representation of this request for logging.
@@ -100,8 +85,6 @@ public class TokeniseRequest {
                 + ", expiryMonth=" + expiryMonth
                 + ", expiryYear=" + expiryYear
                 + ", cardScheme='" + cardScheme + '\''
-                + ", tokenType=" + tokenType
-                + ", merchantId='" + merchantId + '\''
                 + '}';
     }
 }

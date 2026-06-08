@@ -10,9 +10,9 @@ import java.util.random.RandomGenerator;
  * internally to a cumulative distribution from which {@link #nextOperation()}
  * samples uniformly.
  *
- * <p>Example — 40/20/35/5 distribution:
+ * <p>Example — 60/35/5 distribution:
  * <pre>{@code
- * var dispatcher = new RandomWorkloadDispatcher(40, 20, 35, 5);
+ * var dispatcher = new RandomWorkloadDispatcher(60, 35, 5);
  * Operation op = dispatcher.nextOperation(); // proportional random selection
  * }</pre>
  */
@@ -22,10 +22,8 @@ public class RandomWorkloadDispatcher {
      * The operation types that can be selected by this dispatcher.
      */
     public enum Operation {
-        /** {@code POST /api/v1/tokens} with {@code ONE_TIME} token type. */
-        TOKENISE_ONE_TIME,
-        /** {@code POST /api/v1/tokens} with {@code RECURRING} token type. */
-        TOKENISE_RECURRING,
+        /** {@code POST /api/v1/tokens} — tokenise a PAN. */
+        TOKENISE,
         /** {@code GET /api/v1/tokens/{token}} — full PAN recovery. */
         DETOKENISE,
         /** {@code GET /api/v1/tokens/{token}} — lightweight existence check (404 is also a "response"). */
@@ -41,22 +39,15 @@ public class RandomWorkloadDispatcher {
      *
      * <p>Weights are integers; relative proportions matter, not absolute values.
      *
-     * @param tokeniseOneTimeWeight   relative weight for ONE_TIME tokenisation
-     * @param tokeniseRecurringWeight relative weight for RECURRING tokenisation
-     * @param detokeniseWeight        relative weight for detokenisation
-     * @param statusCheckWeight       relative weight for status check
+     * @param tokeniseWeight    relative weight for tokenisation
+     * @param detokeniseWeight  relative weight for detokenisation
+     * @param statusCheckWeight relative weight for status check
      */
-    public RandomWorkloadDispatcher(int tokeniseOneTimeWeight,
-                                    int tokeniseRecurringWeight,
+    public RandomWorkloadDispatcher(int tokeniseWeight,
                                     int detokeniseWeight,
                                     int statusCheckWeight) {
         this.random = RandomGenerator.getDefault();
-        int[] weights = {
-            tokeniseOneTimeWeight,
-            tokeniseRecurringWeight,
-            detokeniseWeight,
-            statusCheckWeight
-        };
+        int[] weights = { tokeniseWeight, detokeniseWeight, statusCheckWeight };
         this.cumulativeWeights = new int[weights.length];
         int cumulative = 0;
         for (int i = 0; i < weights.length; i++) {
@@ -79,6 +70,6 @@ public class RandomWorkloadDispatcher {
                 return ops[i];
             }
         }
-        return Operation.TOKENISE_ONE_TIME; // unreachable, satisfies compiler
+        return Operation.TOKENISE; // unreachable, satisfies compiler
     }
 }

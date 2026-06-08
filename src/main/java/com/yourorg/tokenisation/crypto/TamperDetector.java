@@ -103,7 +103,6 @@ public class TamperDetector {
                     null,
                     null,
                     null,
-                    null,
                     "key_versions row checksum mismatch for id: " + kv.getId(),
                     null);
             throw new KeyIntegrityException(

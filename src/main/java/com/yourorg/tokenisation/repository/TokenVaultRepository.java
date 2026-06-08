@@ -15,7 +15,7 @@ import java.util.UUID;
  *
  * <p>Query methods are grouped by the feature that uses them:
  * <ul>
- *   <li>Tokenisation — de-duplication lookup for {@code RECURRING} tokens
+ *   <li>Tokenisation — de-duplication lookup by PAN hash
  *   <li>Detokenisation — hot-path lookup by token value
  *   <li>Key rotation — batch queries over active tokens for a given key version
  * </ul>
@@ -39,27 +39,17 @@ public interface TokenVaultRepository extends JpaRepository<TokenVault, UUID> {
     // ── Tokenisation de-dup ──────────────────────────────────────────────
 
     /**
-     * Checks for an existing active {@code RECURRING} token for the given PAN hash and merchant.
+     * Checks for an existing active token for the given PAN hash.
      *
      * <p>Used by {@code TokenisationService} before issuing a new token.
      * If a match is found, the existing token is returned instead of creating a new record.
-     * The query targets the {@code idx_token_vault_pan_hash_recurring} partial index.
+     * The query targets the {@code idx_token_vault_pan_hash_active} unique partial index.
      *
-     * @param panHash    the HMAC-SHA256 of the PAN; must not be null
-     * @param merchantId the merchant scope; may be {@code null} for global tokens
-     * @return the existing recurring token if found, otherwise empty
+     * @param panHash the HMAC-SHA256 of the PAN; must not be null
+     * @return the existing active token if found, otherwise empty
      */
-    @Query("""
-            SELECT tv FROM TokenVault tv
-            WHERE tv.panHash = :panHash
-              AND tv.tokenType = 'RECURRING'
-              AND tv.isActive = true
-              AND (:merchantId IS NULL AND tv.merchantId IS NULL
-                   OR tv.merchantId = :merchantId)
-            """)
-    Optional<TokenVault> findActiveRecurringByPanHashAndMerchant(
-            @Param("panHash") String panHash,
-            @Param("merchantId") String merchantId);
+    @Query("SELECT tv FROM TokenVault tv WHERE tv.panHash = :panHash AND tv.isActive = true")
+    Optional<TokenVault> findActiveByPanHash(@Param("panHash") String panHash);
 
     // ── Key rotation ────────────────────────────────────────────────────
 

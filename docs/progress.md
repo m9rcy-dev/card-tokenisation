@@ -5,9 +5,9 @@
 > and the clean code checklist (PLAN.md §13) are **all** satisfied.
 > Partial work stays `[ ]` — no exceptions.
 
-**Last updated:** 2026-04-18 NZST  
-**Current phase:** Feature 02 — Production-Scale Rotation, Gatling, OpenShift  
-**Next task:** All Feature 02 tasks complete — see Notes for Next Session for post-feature verification steps
+**Last updated:** 2026-06-08 NZST  
+**Current phase:** Feature 03 — Vault Simplification & Token Lifecycle  
+**Next task:** All Feature 03 tasks complete — integration tests require Docker to run
 
 ---
 
@@ -236,11 +236,43 @@ See `docs/feature-02.md` for full spec. See `docs/feature-02-plan.md` for origin
 > **Update this section before ending every session.**
 > The next session reads this before anything else.
 
-- **Current state:** Feature 02 fully implemented and documented
-- **Immediate next step:** Run verification checklist from `docs/feature-02.md §6`:
-  1. `mvn test -Dtest="RotationBatchProcessorTest"` — expect 9/9 pass
-  2. `mvn test -Dtest="ScheduledRotationIntegrationTest,EmergencyRotationIntegrationTest"` — expect 17/17 pass
-  3. `mvn test` — full suite (note: `DetokenisationIntegrationTest` and `HealthMetricsIntegrationTest` have pre-existing context-ordering flakiness unrelated to Feature 02; both pass in isolation)
-  4. `mvn test -P load-tests -Dtest="*100000*"` — 100K rotation CI test (Docker required)
-  5. `make start && make gatling-test GATLING_SCALE=20k` — Gatling tokenisation
-- **Context:** All Feature 02 code is implemented. Pre-existing test flakiness (7 failures in full suite) is unrelated to Feature 02 — the affected tests pass in isolation. Feature 01 baseline code is complete; this is a greenfield project with all phases implemented.
+- **Current state:** Feature 03 fully implemented — vault simplified, token lifecycle enforced
+- **Immediate next step:** Run with Docker available:
+  1. `mvn test` — full suite (Docker required for integration tests)
+  2. `mvn test -P load-tests -Dtest="KeyRotationUnderLoadTest"` — load test regression
+  3. `make start && make gatling-test GATLING_SCALE=20k` — Gatling smoke
+- **Unit tests (no Docker):** 162 tests pass — `mvn test -Dtest="*ServiceTest,*ProcessorTest,*DetectorTest,*CipherTest,*HasherTest,*KeyRingTest,*RotationServiceTest,*KmsAdapterTest,*ControllerTest"`
+- **Context:** Feature 03 removed token_type and merchant_id from the vault (single-tenant, always-deterministic). Added expiry enforcement, DELETE /api/v1/tokens/{token} revocation, and card scheme allowlist validation. See docs/feature-03-plan.md for full details.
+
+---
+
+## Feature 03 — Vault Simplification & Token Lifecycle
+
+See `docs/feature-03-plan.md` for full spec.
+
+### Removed
+
+- [x] F3-1 — `TokenType.java` enum — deleted; vault is always deterministic
+- [x] F3-2 — `MerchantScopeException.java` — deleted; no multi-tenant scoping
+- [x] F3-3 — `merchant_id` from `token_vault`, `token_audit_log`, all DTOs, services, and tests
+- [x] F3-4 — `token_type` from `token_vault`, `TokenVault`, `TokeniseRequest`, `TokeniseResponse`, `DetokeniseResponse`
+- [x] F3-5 — `MERCHANT_SCOPE_VIOLATION` from `AuditEventType`
+- [x] F3-6 — Per-merchant rate limit from `RateLimitInterceptor` and `DetokenisationProperties`
+- [x] F3-7 — `X-Merchant-ID` header from `TokenController` detokenise endpoint and all tests
+- [x] F3-8 — `findActiveRecurringByPanHashAndMerchant()` replaced with `findActiveByPanHash()`
+
+### Added
+
+- [x] F3-9 — `V5__simplify_token_vault.sql` — Flyway migration dropping removed columns, unique partial index on `pan_hash` WHERE `is_active = TRUE`
+- [x] F3-10 — `TokenisationProperties.java` — binds `tokenisation.allowed-card-schemes` list
+- [x] F3-11 — `ValidCardScheme.java` + `CardSchemeValidator.java` — allowlist validation on `cardScheme`
+- [x] F3-12 — `expires_at` enforcement in `DetokenisationService.checkNotExpired()` — expired tokens return 404
+- [x] F3-13 — `TOKEN_REVOKED` event in `AuditEventType`
+- [x] F3-14 — `TokenisationService.revokeToken()` — deactivates token, writes `TOKEN_REVOKED` audit
+- [x] F3-15 — `DELETE /api/v1/tokens/{token}` in `TokenController` returning 204
+
+### Documentation
+
+- [x] F3-16 — `docs/feature-03-plan.md` created
+- [x] F3-17 — `docs/progress.md` updated
+- [x] F3-18 — Bruno collections updated (removed merchant headers, removed ONE_TIME/RECURRING fields)

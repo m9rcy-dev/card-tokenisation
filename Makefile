@@ -89,6 +89,11 @@ results:
 start-postgres:
 	@if docker ps -q -f name=$(POSTGRES_CONTAINER) | grep -q .; then \
 		echo "postgres already running"; \
+	elif docker ps -aq -f name=$(POSTGRES_CONTAINER) | grep -q .; then \
+		docker start $(POSTGRES_CONTAINER); \
+		echo "waiting for postgres..."; \
+		until docker exec $(POSTGRES_CONTAINER) pg_isready -U $(POSTGRES_USER) -d $(POSTGRES_DB) > /dev/null 2>&1; do sleep 1; done; \
+		echo "postgres ready"; \
 	else \
 		docker run -d \
 			--name $(POSTGRES_CONTAINER) \
@@ -156,7 +161,7 @@ _GATLING_REQUESTS := $(shell echo $(GATLING_SCALE) | sed 's/k/000/; s/m/000000/'
 ## gatling-test [GATLING_SCALE=20k|50k|100k|1m] [GATLING_SIM=...]: run Gatling simulation (requires: make start)
 gatling-test:
 	$(MVN) gatling:test -P gatling-tests \
-	  -DsimulationClass=$(GATLING_SIM) \
+	  -Dgatling.simulationClass=$(GATLING_SIM) \
 	  -DbaseUrl=$(GATLING_BASE_URL) \
 	  -DtotalRequests=$(_GATLING_REQUESTS) \
 	  -DdbUrl=$(GATLING_DB_URL) \

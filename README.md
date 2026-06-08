@@ -79,12 +79,10 @@ POST /api/v1/tokens
 Content-Type: application/json
 
 {
-  "pan": "4111111111111111",
+  "pan": "5500005555555559",
   "expiryMonth": 12,
   "expiryYear": 2027,
-  "cardScheme": "VISA",
-  "tokenType": "ONE_TIME",
-  "merchantId": "MERCHANT_001"
+  "cardScheme": "MC"
 }
 ```
 
@@ -92,41 +90,47 @@ Content-Type: application/json
 ```json
 {
   "token": "3a4f9d2e-1b5c-4f8a-a3e7-c6d9f0b2a1e4",
-  "tokenType": "ONE_TIME",
-  "lastFour": "1111",
-  "cardScheme": "VISA",
+  "lastFour": "5559",
+  "cardScheme": "MC",
   "createdAt": "2026-04-17T00:00:00Z"
 }
 ```
 
-**Token types:**
-- `ONE_TIME` — unique token per request (e.g. one-off payment)
-- `RECURRING` — deterministic; same PAN + merchant always returns the same token (e.g. subscription billing)
+The vault is deterministic — the same PAN always returns the same token. Calling this endpoint twice with the same PAN returns the same token value with a single vault record.
+
+`cardScheme` must be in the configured allowlist (`tokenisation.allowed-card-schemes`). Unrecognised values return `400`.
 
 ### Detokenise a token
 
 ```http
 GET /api/v1/tokens/3a4f9d2e-1b5c-4f8a-a3e7-c6d9f0b2a1e4
-X-Merchant-ID: MERCHANT_001
 ```
 
 **Response (200 OK):**
 ```json
 {
-  "pan": "4111111111111111",
-  "lastFour": "1111",
-  "cardScheme": "VISA",
-  "tokenType": "ONE_TIME",
+  "pan": "5500005555555559",
+  "lastFour": "5559",
+  "cardScheme": "MC",
   "expiryMonth": 12,
   "expiryYear": 2027
 }
 ```
 
 **Error responses:**
-- `403` — `X-Merchant-ID` does not match the token's owner
-- `404` — Token not found or inactive
+- `404` — Token not found, inactive, or expired
 - `429` — Rate limit exceeded
 - `500` — Crypto failure or compromised key
+
+### Revoke a token
+
+```http
+DELETE /api/v1/tokens/3a4f9d2e-1b5c-4f8a-a3e7-c6d9f0b2a1e4
+```
+
+**Response:** `204 No Content`
+
+Permanently deactivates the token (card lost or stolen). The vault record is retained for audit purposes. Subsequent `GET` on the same token returns `404`.
 
 ### Health check
 
@@ -187,6 +191,10 @@ All configuration is in `src/main/resources/application.yml`. Sensitive values a
 ### Key application.yml settings
 
 ```yaml
+tokenisation:
+  allowed-card-schemes:        # allowlist for cardScheme field; extend to add VISA etc.
+    - MC
+
 rotation:
   batch:
     cron: "0 */15 * * * *"   # run rotation batches every 15 minutes
@@ -197,7 +205,6 @@ rotation:
 
 detokenisation:
   rate-limit:
-    per-merchant-per-minute: 1000
     per-service-per-minute: 10000
 ```
 
@@ -258,7 +265,7 @@ Results are written as JSON to `target/load-test-results/` after each test.
 |------------|----------|-------|-----------------|
 | `TokenisationLoadTest` | `POST /api/v1/tokens` only | 1K → 50K requests | 20 |
 | `DetokenisationLoadTest` | `GET /api/v1/tokens/{token}` only | 1K → 50K requests | 20 |
-| `MixedWorkloadLoadTest` | 40% tokenise + 35% detokenise + 20% recurring + 5% status | 1K → 50K requests | 20 |
+| `MixedWorkloadLoadTest` | 60% tokenise + 35% detokenise + 5% status | 1K → 50K requests | 20 |
 | `KeyRotationUnderLoadTest` | Full rotation while live traffic continues | 1K pre-seeded tokens | 20 |
 | `TamperedKeyUnderLoadTest` | DB-level key tamper during load | 500 pre-seeded tokens | 20 |
 
@@ -325,18 +332,18 @@ The `load-tests` Maven profile adds these JVM flags via the Surefire `argLine`:
 
 This gives the scheduler enough carrier threads to run all concurrently-pinned virtual threads. However, as with the Tomcat platform-thread issue, this is a mitigation. The primary fix is keeping concurrency ≤ 20.
 
-#### Pitfall: shared PAN for RECURRING tokenisation causes NonUniqueResultException
+#### Pitfall: shared PAN for tokenisation under concurrent load causes NonUniqueResultException
 
-`MixedWorkloadLoadTest` originally used a fixed PAN (`"4111111111111111"`) for all `TOKENISE_RECURRING` operations to exercise the deduplication path. Under concurrent load (15+ threads), this causes a race condition:
+`MixedWorkloadLoadTest` originally used a fixed PAN for all tokenisation requests to exercise the deduplication path. Under concurrent load (15+ threads), this causes a race condition:
 
-1. Multiple threads call `findActiveRecurringByPanHashAndMerchant` simultaneously.
+1. Multiple threads call `findActiveByPanHash` simultaneously.
 2. All find zero results (no token exists yet).
-3. All insert a new `RECURRING` token for the same PAN + merchant.
+3. All insert a new token for the same PAN.
 4. The next call to the same query finds N rows and throws `NonUniqueResultException` because Spring Data JPA's `Optional<T>` return type uses `getSingleResult()` internally.
 
-The symptom appears at 5K scale (1,000 RECURRING requests at 15 concurrency) but not at 1K scale (200 RECURRING requests at 10 concurrency) — higher concurrency means more simultaneous inserts.
+The symptom appears at 5K scale but not 1K scale — higher concurrency means more simultaneous inserts.
 
-**Fix applied:** All tokenisation requests (ONE_TIME and RECURRING) use `PanGenerator.generateVisa16()` to generate unique PANs. No two threads compete for the same PAN+merchant slot, so there is never more than one token per key. Dedup correctness under concurrent writes is covered by `DetokenisationIntegrationTest`, not by the load tests.
+**Fix applied:** All tokenisation requests use `PanGenerator.generateVisa16()` to generate unique PANs. No two threads compete for the same PAN slot. Dedup correctness under concurrent writes is covered by `TokenisationIntegrationTest`, not by the load tests.
 
 #### Pitfall: Testcontainers PostgreSQL has a low default connection limit
 
@@ -371,14 +378,14 @@ For a detailed explanation of how the system works — including plain-language 
 
 ```
 REST API
-  TokenController          → POST /api/v1/tokens, GET /api/v1/tokens/{token}
+  TokenController          → POST /api/v1/tokens, GET /api/v1/tokens/{token}, DELETE /api/v1/tokens/{token}
   AdminKeyController       → POST /api/v1/admin/keys/rotate
   HealthController         → GET /api/v1/health
   MetricsController        → GET /api/v1/metrics
 
 Service Layer
   TokenisationService      → PAN validation, dedup, envelope encrypt, audit
-  DetokenisationService    → scope check, DEK unwrap, GCM decrypt, audit
+  DetokenisationService    → expiry check, DEK unwrap, GCM decrypt, audit
   KeyRotationService       → scheduled / emergency rotation initiation
 
 Crypto Layer
@@ -435,7 +442,6 @@ The following items are implemented as stubs or deferred to Phase 2. **Do not de
 | Severity | Item | Location | Status |
 |----------|------|----------|--------|
 | CRITICAL | All API endpoints allow unauthenticated access | `SecurityConfig.java` | Phase 2 — JWT stub in place |
-| CRITICAL | Merchant ID accepted from request body (should come from JWT) | `TokenController.java` | Resolved when JWT is wired up |
 | CRITICAL | Admin key rotation endpoint has no authentication | `AdminKeyController.java` | Protect with mTLS or admin JWT role before deploy |
 | HIGH | Swagger UI accessible without auth | `application.yml` springdoc section | Disable in production profile |
 | HIGH | Rate limiting is single-node only (Caffeine in-memory) | `RateLimitInterceptor.java` | Redis-backed for multi-node |
@@ -450,7 +456,7 @@ The following items are implemented as stubs or deferred to Phase 2. **Do not de
 - HikariCP default removed; KEK has no hardcoded fallback in `application.yml`
 - Database role `tokenisation_app` has minimum-privilege grants; audit log is append-only at DB layer
 - No passwords committed to source control (`V6__setup_db_roles.sql` creates role without password)
-- Caffeine rate limiter bounded to 10,000 merchant entries; header length validated at ≤256 characters
+- Caffeine rate limiter with per-service cap; single-node in-memory (Redis-backed for multi-node)
 
 ### Documentation
 

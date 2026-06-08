@@ -31,10 +31,10 @@ public enum AuditEventType {
     DETOKENISE_FAILURE,
 
     /**
-     * A cross-merchant access attempt was detected and rejected.
-     * The requesting merchant does not own the token they attempted to detokenise.
+     * A token was explicitly revoked (card reported lost or stolen).
+     * The token record is deactivated and can no longer be detokenised.
      */
-    MERCHANT_SCOPE_VIOLATION,
+    TOKEN_REVOKED,
 
     /**
      * Ciphertext or authentication tag tampering was detected during decryption.

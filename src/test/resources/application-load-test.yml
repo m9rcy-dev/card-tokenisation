@@ -35,7 +35,6 @@ detokenisation:
   rate-limit:
     # Effectively disable rate limiting so it does not interfere with throughput measurements.
     # Rate-limit behaviour is tested separately in DetokenisationIntegrationTest.
-    per-merchant-per-minute: 99999999
     per-service-per-minute: 99999999
 
 logging:

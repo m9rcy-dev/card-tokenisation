@@ -38,8 +38,7 @@ public class DetokenisationSimulation extends Simulation {
 
     private final HttpProtocolBuilder protocol = http
             .baseUrl(SimulationConfig.BASE_URL)
-            .acceptHeader("application/json")
-            .header("X-Merchant-ID", SimulationConfig.MERCHANT_ID);
+            .acceptHeader("application/json");
 
     private final ScenarioBuilder detokenise = scenario("Detokenise GET /api/v1/tokens/{token}")
             .feed(listFeeder(buildFeed()).circular())
@@ -82,9 +81,8 @@ public class DetokenisationSimulation extends Simulation {
             try {
                 String pan = TokenisationSimulation.generateVisa16();
                 String body = String.format("""
-                        {"pan":"%s","tokenType":"ONE_TIME","merchantId":"%s",
-                         "cardScheme":"VISA","expiryMonth":12,"expiryYear":2029}""",
-                        pan, SimulationConfig.MERCHANT_ID);
+                        {"pan":"%s","cardScheme":"MC","expiryMonth":12,"expiryYear":2029}""",
+                        pan);
 
                 var request = java.net.http.HttpRequest.newBuilder()
                         .uri(java.net.URI.create(SimulationConfig.BASE_URL + "/api/v1/tokens"))

@@ -8,7 +8,6 @@ import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
 import com.yourorg.tokenisation.crypto.TamperDetector;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.RotationReason;
-import com.yourorg.tokenisation.domain.TokenType;
 import com.yourorg.tokenisation.kms.KmsProvider;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
@@ -19,9 +18,6 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -58,8 +54,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class KeyRotationUnderLoadTest extends AbstractLoadTest {
 
     private static final int SEED_TOKEN_COUNT = 1_000;
-    private static final String MERCHANT = "LOAD_MERCHANT_ROT";
-
     @Autowired private TestRestTemplate restTemplate;
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private KeyVersionRepository keyVersionRepository;
@@ -209,7 +203,7 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
             verifier.submit(() -> {
                 long t0 = System.currentTimeMillis();
                 try {
-                    ResponseEntity<DetokeniseResponse> resp = detokenise(token, MERCHANT);
+                    ResponseEntity<DetokeniseResponse> resp = detokenise(token);
                     if (resp.getStatusCode() != HttpStatus.OK) {
                         verifyErrors.incrementAndGet();
                     }
@@ -272,7 +266,7 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
     @Test
     void rotation_100000requests_allMigratedToNewKey() {
         // Seed 100K tokens via JDBC bulk insert — bypasses HTTP API for speed
-        bulkSeeder.seedTokens(100_000, MERCHANT, 1_000);
+        bulkSeeder.seedTokens(100_000, 1_000);
         long heapBefore = captureHeapMb();
         UUID oldKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
 
@@ -321,21 +315,13 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
         return tokens;
     }
 
-    private ResponseEntity<DetokeniseResponse> detokenise(String token, String merchantId) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("X-Merchant-ID", merchantId);
-        return restTemplate.exchange(
-                "/api/v1/tokens/" + token,
-                HttpMethod.GET,
-                new HttpEntity<>(headers),
-                DetokeniseResponse.class);
+    private ResponseEntity<DetokeniseResponse> detokenise(String token) {
+        return restTemplate.getForEntity("/api/v1/tokens/" + token, DetokeniseResponse.class);
     }
 
     private TokeniseRequest buildTokeniseRequest(String pan) {
         TokeniseRequest r = new TokeniseRequest();
         r.setPan(pan);
-        r.setTokenType(TokenType.ONE_TIME);
-        r.setMerchantId(MERCHANT);
         r.setCardScheme("VISA");
         r.setExpiryMonth(12);
         r.setExpiryYear(2027);

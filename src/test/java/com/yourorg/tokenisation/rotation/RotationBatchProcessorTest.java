@@ -8,7 +8,6 @@ import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
-import com.yourorg.tokenisation.domain.TokenType;
 import com.yourorg.tokenisation.domain.TokenVault;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
@@ -133,7 +132,7 @@ class RotationBatchProcessorTest {
         processor.processBatch(OLD_KEY_ID, NEW_KEY_ID, 10);
 
         ArgumentCaptor<AuditEventType> eventCaptor = ArgumentCaptor.forClass(AuditEventType.class);
-        verify(auditLogger).logSuccess(eventCaptor.capture(), any(), any(), any(), any(), any());
+        verify(auditLogger).logSuccess(eventCaptor.capture(), any(), any(), any(), any());
         assertThat(eventCaptor.getValue()).isEqualTo(AuditEventType.TOKEN_REENCRYPTED);
     }
 
@@ -195,7 +194,7 @@ class RotationBatchProcessorTest {
         processor.processBatch(OLD_KEY_ID, NEW_KEY_ID, 10);
 
         ArgumentCaptor<AuditEventType> eventCaptor = ArgumentCaptor.forClass(AuditEventType.class);
-        verify(auditLogger).logFailure(eventCaptor.capture(), any(), any(), any(), any(), any(), any());
+        verify(auditLogger).logFailure(eventCaptor.capture(), any(), any(), any(), any(), any());
         assertThat(eventCaptor.getValue()).isEqualTo(AuditEventType.RE_ENCRYPTION_FAILURE);
     }
 
@@ -278,12 +277,10 @@ class RotationBatchProcessorTest {
                 .encryptedDek(new byte[60])
                 .keyVersion(kv)
                 .panHash("hash")
-                .tokenType(TokenType.ONE_TIME)
                 .lastFour("1111")
                 .cardScheme("VISA")
                 .expiryMonth((short) 12)
                 .expiryYear((short) 2027)
-                .merchantId("MERCHANT_001")
                 .createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .build();

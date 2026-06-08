@@ -130,8 +130,8 @@ class TamperDetectorTest {
 
         tamperDetector.assertIntegrity(kv);
 
-        verify(auditLogger, never()).logFailure(any(), any(), any(), any(), any(), any(), any());
-        verify(auditLogger, never()).logSuccess(any(), any(), any(), any(), any(), any());
+        verify(auditLogger, never()).logFailure(any(), any(), any(), any(), any(), any());
+        verify(auditLogger, never()).logSuccess(any(), any(), any(), any(), any());
         verify(auditLogger, never()).logKeyEvent(any(), any(), any(), any(), any());
     }
 
@@ -156,7 +156,7 @@ class TamperDetectorTest {
                 .isInstanceOf(KeyIntegrityException.class);
 
         ArgumentCaptor<AuditEventType> eventCaptor = ArgumentCaptor.forClass(AuditEventType.class);
-        verify(auditLogger).logFailure(eventCaptor.capture(), any(), any(), any(), any(), any(), any());
+        verify(auditLogger).logFailure(eventCaptor.capture(), any(), any(), any(), any(), any());
         assertThat(eventCaptor.getValue()).isEqualTo(AuditEventType.TAMPER_ALERT);
     }
 
@@ -169,7 +169,7 @@ class TamperDetectorTest {
                 .isInstanceOf(KeyIntegrityException.class);
 
         ArgumentCaptor<String> reasonCaptor = ArgumentCaptor.forClass(String.class);
-        verify(auditLogger).logFailure(any(), any(), any(), any(), any(), reasonCaptor.capture(), any());
+        verify(auditLogger).logFailure(any(), any(), any(), any(), reasonCaptor.capture(), any());
         assertThat(reasonCaptor.getValue()).contains(KEY_ID.toString());
     }
 

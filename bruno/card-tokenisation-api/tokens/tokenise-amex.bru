@@ -1,5 +1,5 @@
 meta {
-  name: Tokenise PAN (AMEX 15-digit)
+  name: Tokenise PAN (AMEX 15-digit) - 400 unsupported scheme
   type: http
   seq: 4
 }
@@ -19,14 +19,10 @@ body:json {
     "pan": "378282246310005",
     "expiryMonth": 3,
     "expiryYear": 2026,
-    "cardScheme": "AMEX",
-    "tokenType": "ONE_TIME",
-    "merchantId": "{{merchantId}}"
+    "cardScheme": "AMEX"
   }
 }
 
 assert {
-  res.status: eq 201
-  res.body.lastFour: eq 0005
-  res.body.cardScheme: eq AMEX
+  res.status: eq 400
 }

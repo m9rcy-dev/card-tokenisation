@@ -26,11 +26,13 @@ tokenisation:
   default-token-ttl-days: 1825
   tamper-detection:
     signing-secret: test-tamper-secret-32-bytes!!!!!
+  allowed-card-schemes:
+    - MC
+    - VISA
 
 detokenisation:
   rate-limit:
-    # Generous limits in unit/integration tests — rate limiter behaviour is tested explicitly
-    per-merchant-per-minute: 100000
+    # Generous limit in unit/integration tests — rate limiter behaviour is tested explicitly
     per-service-per-minute: 100000
 
 rotation:

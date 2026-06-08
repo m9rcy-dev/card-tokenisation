@@ -81,7 +81,6 @@ public class RotationSimulation extends Simulation {
                             feed(listFeeder(buildFeed()).circular())
                                     .exec(http("GET /api/v1/tokens/{token} (rotation)")
                                             .get(session -> "/api/v1/tokens/" + session.getString("token"))
-                                            .header("X-Merchant-ID", SimulationConfig.MERCHANT_ID)
                                             .check(status().in(200, 404))) // 404 OK — token may have been rotated
                     )
             );
@@ -136,9 +135,8 @@ public class RotationSimulation extends Simulation {
             try {
                 String pan = TokenisationSimulation.generateVisa16();
                 String body = String.format(
-                        "{\"pan\":\"%s\",\"tokenType\":\"ONE_TIME\",\"merchantId\":\"%s\"," +
-                        "\"cardScheme\":\"VISA\",\"expiryMonth\":12,\"expiryYear\":2029}",
-                        pan, SimulationConfig.MERCHANT_ID);
+                        "{\"pan\":\"%s\",\"cardScheme\":\"MC\",\"expiryMonth\":12,\"expiryYear\":2029}",
+                        pan);
                 var req = java.net.http.HttpRequest.newBuilder()
                         .uri(java.net.URI.create(SimulationConfig.BASE_URL + "/api/v1/tokens"))
                         .header("Content-Type", "application/json")
@@ -165,9 +163,8 @@ public class RotationSimulation extends Simulation {
     private static String buildTokeniseBody() {
         String pan = TokenisationSimulation.generateVisa16();
         return String.format(
-                "{\"pan\":\"%s\",\"tokenType\":\"ONE_TIME\",\"merchantId\":\"%s\"," +
-                "\"cardScheme\":\"VISA\",\"expiryMonth\":12,\"expiryYear\":2029}",
-                pan, SimulationConfig.MERCHANT_ID);
+                "{\"pan\":\"%s\",\"cardScheme\":\"MC\",\"expiryMonth\":12,\"expiryYear\":2029}",
+                pan);
     }
 
     private static String extractToken(String json) {

@@ -46,10 +46,10 @@ public class BulkTokenSeeder {
     private static final String INSERT_SQL = """
             INSERT INTO token_vault (
                 token_id, token, encrypted_pan, iv, auth_tag,
-                encrypted_dek, key_version_id, pan_hash, merchant_id,
-                token_type, card_scheme, last_four, expiry_month, expiry_year,
+                encrypted_dek, key_version_id, pan_hash,
+                card_scheme, last_four, expiry_month, expiry_year,
                 created_at, expires_at, is_active, record_version
-            ) VALUES (?,?,?,?,?, ?,?::uuid,?,?, ?,?,?,?,?, ?,?,?,?)
+            ) VALUES (?,?,?,?,?, ?,?::uuid,?, ?,?,?,?, ?,?,?,?)
             """;
 
     private final JdbcTemplate jdbc;
@@ -68,21 +68,18 @@ public class BulkTokenSeeder {
     }
 
     /**
-     * Inserts {@code count} encrypted token vault rows for the given merchant.
+     * Inserts {@code count} encrypted token vault rows.
      *
-     * @param count      number of rows to insert
-     * @param merchantId merchant scope for all seeded tokens
-     * @param chunkSize  JDBC batch size; 1000 is a good default
+     * @param count     number of rows to insert
+     * @param chunkSize JDBC batch size; 1000 is a good default
      * @return array of token strings in insertion order — use these for post-rotation verification
      */
-    public String[] seedTokens(int count, String merchantId, int chunkSize) {
+    public String[] seedTokens(int count, int chunkSize) {
         KeyMaterial active = keyRing.getActive();
         byte[] kek = active.copyKek();
         String[] tokens = new String[count];
         try {
             List<Object[]> chunk = new ArrayList<>(chunkSize);
-            // Convert to java.sql.Timestamp once — PostgreSQL JDBC driver does not accept
-            // java.time.Instant directly (even with Types.TIMESTAMP_WITH_TIMEZONE).
             Timestamp now = Timestamp.from(Instant.now());
             Timestamp expiresAt = Timestamp.from(Instant.now().plusSeconds(5L * 365 * 86400));
 
@@ -93,7 +90,7 @@ public class BulkTokenSeeder {
                 Arrays.fill(panBytes, (byte) 0);
 
                 String panHash = panHasher.hash(pan);
-                String token = UUID.randomUUID().toString(); // 36 chars — matches VARCHAR(36)
+                String token = UUID.randomUUID().toString();
                 tokens[i] = token;
 
                 chunk.add(new Object[]{
@@ -105,8 +102,6 @@ public class BulkTokenSeeder {
                         enc.encryptedDek(),           // encrypted_dek
                         active.keyVersionId(),        // key_version_id (cast ::uuid in SQL)
                         panHash,                      // pan_hash
-                        merchantId,                   // merchant_id
-                        "ONE_TIME",                   // token_type
                         "VISA",                       // card_scheme
                         pan.substring(pan.length() - 4), // last_four
                         (short) 12,                   // expiry_month
@@ -141,16 +136,14 @@ public class BulkTokenSeeder {
             ps.setBytes(6,   (byte[]) row[5]);                   // encrypted_dek
             ps.setObject(7,  row[6], Types.OTHER);               // key_version_id ::uuid
             ps.setString(8,  (String) row[7]);                   // pan_hash
-            ps.setString(9,  (String) row[8]);                   // merchant_id
-            ps.setString(10, (String) row[9]);                   // token_type
-            ps.setString(11, (String) row[10]);                  // card_scheme
-            ps.setString(12, (String) row[11]);                  // last_four
-            ps.setShort(13,  (short) row[12]);                   // expiry_month
-            ps.setShort(14,  (short) row[13]);                   // expiry_year
-            ps.setTimestamp(15, (Timestamp) row[14]);                // created_at (TIMESTAMPTZ)
-            ps.setTimestamp(16, (Timestamp) row[15]);                // expires_at (TIMESTAMPTZ)
-            ps.setBoolean(17, (boolean) row[16]);                // is_active
-            ps.setInt(18,    (int) row[17]);                     // record_version
+            ps.setString(9,  (String) row[8]);                   // card_scheme
+            ps.setString(10, (String) row[9]);                   // last_four
+            ps.setShort(11,  (short)  row[10]);                  // expiry_month
+            ps.setShort(12,  (short)  row[11]);                  // expiry_year
+            ps.setTimestamp(13, (Timestamp) row[12]);            // created_at
+            ps.setTimestamp(14, (Timestamp) row[13]);            // expires_at
+            ps.setBoolean(15, (boolean) row[14]);                // is_active
+            ps.setInt(16,    (int)    row[15]);                  // record_version
         });
     }
 }

@@ -38,10 +38,6 @@ public final class SimulationConfig {
     public static final int SUSTAIN_SECONDS =
             Integer.parseInt(System.getProperty("sustainSeconds", "120"));
 
-    /** Merchant ID header value sent on all requests. */
-    public static final String MERCHANT_ID =
-            System.getProperty("merchantId", "GATLING_MERCHANT");
-
     // ── Database connection for before()/after() hooks ────────────────────────
 
     /** JDBC URL for the database backing the target application instance. */

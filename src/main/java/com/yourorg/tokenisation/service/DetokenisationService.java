@@ -10,7 +10,6 @@ import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.TokenVault;
 import com.yourorg.tokenisation.exception.KeyIntegrityException;
-import com.yourorg.tokenisation.exception.MerchantScopeException;
 import com.yourorg.tokenisation.exception.TokenNotFoundException;
 import com.yourorg.tokenisation.exception.TokenisationException;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
@@ -20,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.crypto.AEADBadTagException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
@@ -30,7 +30,7 @@ import java.util.UUID;
  * <p>Detokenisation flow:
  * <ol>
  *   <li>Look up the active {@link TokenVault} record by token value — 404 if absent or inactive.
- *   <li>Verify the requesting merchant ID matches the token's merchant scope — 403 on mismatch.
+ *   <li>Check expiry: if {@code expires_at} is set and in the past, return 404.
  *   <li>Retrieve {@link KeyMaterial} from the {@link InMemoryKeyRing} by the vault's key version ID.
  *   <li>If key status is {@code COMPROMISED} — write {@code TAMPER_ALERT} audit record,
  *       throw {@link KeyIntegrityException} (caller receives 500).
@@ -83,21 +83,18 @@ public class DetokenisationService {
      * the response is built — the string object in the response is the only remaining
      * reference and must be handled as sensitive by the caller.
      *
-     * @param token      the opaque token value to detokenise; must not be null or blank
-     * @param merchantId the merchant requesting detokenisation; must match the token's scope
+     * @param token the opaque token value to detokenise; must not be null or blank
      * @return the detokenisation response containing the plain-text PAN and card metadata
-     * @throws TokenNotFoundException  if the token is not found or is inactive
-     * @throws MerchantScopeException  if {@code merchantId} does not match the token's scope
+     * @throws TokenNotFoundException  if the token is not found, inactive, or expired
      * @throws KeyIntegrityException   if the key is compromised or the GCM auth tag fails
      * @throws TokenisationException   if decryption fails for any other reason
      */
     @Transactional(readOnly = true)
-    public DetokeniseResponse detokenise(String token, String merchantId) {
+    public DetokeniseResponse detokenise(String token) {
         Objects.requireNonNull(token, "token must not be null");
-        Objects.requireNonNull(merchantId, "merchantId must not be null");
 
         TokenVault vault = findActiveVaultOrThrow(token);
-        verifyMerchantScope(vault, merchantId);
+        checkNotExpired(vault, token);
 
         String keyVersionId = vault.getKeyVersion().getId().toString();
         KeyMaterial keyMaterial = keyRing.getByVersion(keyVersionId);
@@ -107,14 +104,12 @@ public class DetokenisationService {
         byte[] kek = keyMaterial.copyKek();
         byte[] panBytes = null;
         try {
-            panBytes = decryptPan(vault, kek, vault.getTokenId(), merchantId);
+            panBytes = decryptPan(vault, kek, vault.getTokenId());
             String pan = new String(panBytes, StandardCharsets.UTF_8);
             DetokeniseResponse responseValue = buildResponse(pan, vault);
 
-            log.debug("Detokenised token for merchant [{}], keyVersion [{}]",
-                    merchantId, keyVersionId);
-            auditLogger.logSuccess(AuditEventType.DETOKENISE, vault.getTokenId(),
-                    merchantId, null, null, null);
+            log.debug("Detokenised token, keyVersion [{}]", keyVersionId);
+            auditLogger.logSuccess(AuditEventType.DETOKENISE, vault.getTokenId(), null, null, null);
 
             return responseValue;
         } finally {
@@ -140,21 +135,20 @@ public class DetokenisationService {
     }
 
     /**
-     * Verifies that the requesting merchant ID matches the token's merchant scope.
+     * Checks that the token has not passed its expiry timestamp.
      *
-     * @param vault      the token vault record
-     * @param merchantId the requesting merchant ID
-     * @throws MerchantScopeException if the merchant IDs do not match
+     * <p>A {@code null} {@code expiresAt} means the token has no expiry set and is
+     * considered permanently active (subject to explicit revocation only).
+     * An expired token returns 404 — identical to an inactive token — to avoid
+     * leaking information about expiry state to the caller.
+     *
+     * @param vault the vault record
+     * @param token the token value (for the exception message)
+     * @throws TokenNotFoundException if the token's {@code expiresAt} is in the past
      */
-    private void verifyMerchantScope(TokenVault vault, String merchantId) {
-        if (!merchantId.equals(vault.getMerchantId())) {
-            // Log at WARN — this event is significant but the detail must not leak to the response
-            log.warn("Merchant scope violation: token belongs to a different merchant");
-            auditLogger.logFailure(AuditEventType.MERCHANT_SCOPE_VIOLATION,
-                    vault.getTokenId(), merchantId, null, null,
-                    "Requesting merchant does not match token's merchant scope", null);
-            throw new MerchantScopeException(
-                    "Token does not belong to the requesting merchant");
+    private void checkNotExpired(TokenVault vault, String token) {
+        if (vault.getExpiresAt() != null && Instant.now().isAfter(vault.getExpiresAt())) {
+            throw new TokenNotFoundException(token);
         }
     }
 
@@ -174,7 +168,7 @@ public class DetokenisationService {
             log.error("Detokenisation blocked — key version [{}] is COMPROMISED",
                     keyMaterial.keyVersionId());
             auditLogger.logFailure(AuditEventType.TAMPER_ALERT,
-                    vault.getTokenId(), null, null, null,
+                    vault.getTokenId(), null, null,
                     "Detokenisation blocked: key version is COMPROMISED", null);
             throw new KeyIntegrityException(
                     "Key version is COMPROMISED — detokenisation blocked");
@@ -189,15 +183,14 @@ public class DetokenisationService {
      * A {@code TAMPER_ALERT} audit event is written before rethrowing as
      * {@link KeyIntegrityException}.
      *
-     * @param vault      the vault record containing ciphertext, IV, auth tag, encrypted DEK
-     * @param kek        the KEK bytes (caller is responsible for zeroing after use)
-     * @param tokenId    the token vault UUID (for logging; may be null in unit tests)
-     * @param merchantId the merchant scope (for audit)
+     * @param vault   the vault record containing ciphertext, IV, auth tag, encrypted DEK
+     * @param kek     the KEK bytes (caller is responsible for zeroing after use)
+     * @param tokenId the token vault UUID (for logging; may be null in unit tests)
      * @return the decrypted PAN bytes — caller is responsible for zeroing after use
      * @throws KeyIntegrityException   if the GCM auth tag fails (tamper detected)
      * @throws TokenisationException   if decryption fails for any other reason
      */
-    private byte[] decryptPan(TokenVault vault, byte[] kek, UUID tokenId, String merchantId) {
+    private byte[] decryptPan(TokenVault vault, byte[] kek, UUID tokenId) {
         try {
             return cipher.decrypt(
                     vault.getEncryptedPan(),
@@ -210,13 +203,13 @@ public class DetokenisationService {
                 log.error("GCM authentication tag failure for token [{}] — ciphertext may be tampered",
                         tokenId);
                 auditLogger.logFailure(AuditEventType.TAMPER_ALERT,
-                        vault.getTokenId(), merchantId, null, null,
+                        vault.getTokenId(), null, null,
                         "GCM authentication tag verification failed — ciphertext may be tampered", null);
                 throw new KeyIntegrityException(
                         "GCM authentication tag verification failed — detokenisation blocked");
             }
             auditLogger.logFailure(AuditEventType.DETOKENISE_FAILURE,
-                    vault.getTokenId(), merchantId, null, null,
+                    vault.getTokenId(), null, null,
                     "Decryption failed", null);
             throw encryptionException;
         }
@@ -239,7 +232,6 @@ public class DetokenisationService {
                 .expiryYear(vault.getExpiryYear() != null ? vault.getExpiryYear().intValue() : null)
                 .cardScheme(vault.getCardScheme())
                 .lastFour(vault.getLastFour())
-                .tokenType(vault.getTokenType())
                 .build();
     }
 }
