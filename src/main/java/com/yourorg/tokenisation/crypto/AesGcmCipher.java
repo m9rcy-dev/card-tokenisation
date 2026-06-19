@@ -142,6 +142,51 @@ public class AesGcmCipher {
     }
 
     /**
+     * Encrypts arbitrary-length bytes under the provided KEK using AES-256-GCM.
+     *
+     * <p>Like {@link #wrapDek} but without the 32-byte restriction. Used to encrypt
+     * HMAC secrets of any length (e.g. legacy env-var strings encoded as UTF-8).
+     * Format: {@code [12-byte IV][AES-GCM ciphertext][16-byte auth tag]}.
+     *
+     * @param plaintext the bytes to encrypt; must not be null or empty
+     * @param kek       the Key Encryption Key; must be exactly 32 bytes (AES-256)
+     * @return IV-prefixed GCM blob — safe to persist
+     * @throws IllegalArgumentException if either argument is null or kek is not 32 bytes
+     * @throws EncryptionException      if the JCE operation fails
+     */
+    public byte[] encryptBytes(byte[] plaintext, byte[] kek) {
+        if (plaintext == null || plaintext.length == 0) {
+            throw new IllegalArgumentException("Plaintext must not be null or empty");
+        }
+        validateKek(kek);
+        byte[] iv = generateIv();
+        byte[] encryptedWithTag = encryptWithDek(plaintext, kek, iv);
+        return prependIv(iv, encryptedWithTag);
+    }
+
+    /**
+     * Decrypts a blob produced by {@link #encryptBytes}.
+     *
+     * <p>The caller is responsible for zeroing the returned array after use.
+     *
+     * @param ivPrefixedBlob IV-prefixed GCM blob as produced by {@code encryptBytes};
+     *                       must not be null; must be at least 28 bytes (12 IV + 16 tag)
+     * @param kek            the KEK used during encryption; must be exactly 32 bytes
+     * @return the plaintext bytes — caller must zero after use
+     * @throws IllegalArgumentException if arguments are null or too short
+     * @throws EncryptionException      if the GCM auth tag fails or decryption fails
+     */
+    public byte[] decryptBytes(byte[] ivPrefixedBlob, byte[] kek) {
+        if (ivPrefixedBlob == null || ivPrefixedBlob.length < GCM_IV_LENGTH_BYTES + GCM_TAG_LENGTH_BYTES) {
+            throw new IllegalArgumentException("Blob is null or too short to contain a valid IV and tag");
+        }
+        validateKek(kek);
+        byte[] iv = Arrays.copyOfRange(ivPrefixedBlob, 0, GCM_IV_LENGTH_BYTES);
+        byte[] ciphertextWithTag = Arrays.copyOfRange(ivPrefixedBlob, GCM_IV_LENGTH_BYTES, ivPrefixedBlob.length);
+        return decryptRaw(ciphertextWithTag, iv, kek);
+    }
+
+    /**
      * Unwraps a DEK that was wrapped by {@link #wrapDek}.
      *
      * <p>The caller is responsible for zeroing the returned array after use.

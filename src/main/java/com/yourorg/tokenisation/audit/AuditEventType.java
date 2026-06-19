@@ -84,5 +84,29 @@ public enum AuditEventType {
     /**
      * Key rotation batch completed: all tokens have been re-encrypted and the old key retired.
      */
-    KEY_ROTATION_COMPLETED_BATCH
+    KEY_ROTATION_COMPLETED_BATCH,
+
+    /**
+     * HMAC key rotation was initiated — the active HMAC key version moved to ROTATING
+     * and a new ACTIVE version was created.
+     */
+    HMAC_ROTATION_STARTED,
+
+    /**
+     * HMAC rotation batch completed: all active vault records have been re-hashed under the
+     * new HMAC key version and the old HMAC version was retired.
+     */
+    HMAC_ROTATION_COMPLETED,
+
+    /**
+     * A vault record's {@code pan_hash} was re-computed under the new HMAC key version
+     * during the HMAC rotation batch.
+     */
+    PAN_HASH_RECOMPUTED,
+
+    /**
+     * A vault record was skipped during HMAC rotation because the KEK used to encrypt
+     * its DEK is COMPROMISED. The record will be re-hashed after KEK rotation completes.
+     */
+    RE_HASH_SKIPPED_COMPROMISED_KEY
 }

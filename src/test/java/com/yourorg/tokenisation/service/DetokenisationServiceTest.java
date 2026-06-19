@@ -5,7 +5,7 @@ import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.EncryptionException;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.crypto.KeyVersionNotFoundException;
 import com.yourorg.tokenisation.domain.KeyStatus;
@@ -61,7 +61,7 @@ class DetokenisationServiceTest {
     private static final String KEY_VERSION_ID = KEY_VERSION_UUID.toString();
 
     @Mock private AesGcmCipher cipher;
-    @Mock private InMemoryKeyRing keyRing;
+    @Mock private InMemoryKekKeyRing keyRing;
     @Mock private TokenVaultRepository tokenVaultRepository;
     @Mock private AuditLogger auditLogger;
 
@@ -302,7 +302,6 @@ class DetokenisationServiceTest {
                 .rotateBy(Instant.now().plusSeconds(86400))
                 .activatedAt(Instant.now().minusSeconds(3600))
                 .createdBy("test")
-                .checksum("placeholder")
                 .build();
         try {
             Field idField = KeyVersion.class.getDeclaredField("id");

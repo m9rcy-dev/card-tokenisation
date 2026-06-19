@@ -3,8 +3,7 @@ package com.yourorg.tokenisation;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
-import com.yourorg.tokenisation.crypto.TamperDetector;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.kms.KmsProvider;
@@ -53,10 +52,9 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
     @Autowired private TokenVaultRepository tokenVaultRepository;
     @Autowired private AuditLogRepository auditLogRepository;
     @Autowired private JdbcTemplate jdbcTemplate;
-    @Autowired private TamperDetector tamperDetector;
     @Autowired private KeyRotationService keyRotationService;
     @Autowired private RotationJob rotationJob;
-    @Autowired private InMemoryKeyRing keyRing;
+    @Autowired private InMemoryKekKeyRing keyRing;
     @Autowired private KmsProvider kmsProvider;
 
     @BeforeEach
@@ -64,14 +62,11 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
         jdbcTemplate.execute("DELETE FROM token_vault");
         jdbcTemplate.execute("DELETE FROM token_audit_log");
         jdbcTemplate.execute(
-                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid");
+                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid AND key_type = 'KEK'");
         jdbcTemplate.execute(
                 "UPDATE key_versions SET status = 'ACTIVE' WHERE id = '" + SEED_KEY_VERSION_ID + "'::uuid");
 
-        KeyVersion seedKey = keyVersionRepository.findActiveOrThrow();
-        seedKey.initializeChecksum(tamperDetector.computeChecksum(seedKey));
-        keyVersionRepository.save(seedKey);
-
+        KeyVersion seedKey = keyVersionRepository.findActiveKekOrThrow();
         byte[] seedKek = kmsProvider.unwrapKek(seedKey.getEncryptedKekBlob());
         try {
             keyRing.load(SEED_KEY_VERSION_ID, seedKek, seedKey.getRotateBy());

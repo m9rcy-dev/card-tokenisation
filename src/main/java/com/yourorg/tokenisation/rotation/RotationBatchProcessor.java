@@ -4,7 +4,7 @@ import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.TokenVault;
@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <h3>Per-record flow</h3>
  * <ol>
- *   <li>Retrieve both KEKs from {@link InMemoryKeyRing} (already loaded at startup — no KMS call).
+ *   <li>Retrieve both KEKs from {@link InMemoryKekKeyRing} (already loaded at startup — no KMS call).
  *   <li>Unwrap the DEK using the old KEK via {@link AesGcmCipher#unwrapDek} (in-memory AES-GCM).
  *   <li>Rewrap the DEK using the new KEK via {@link AesGcmCipher#wrapDek} (in-memory AES-GCM).
  *   <li>Zero all plaintext key material ({@code oldKek}, {@code newKek}, {@code plaintextDek})
@@ -63,7 +63,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <h3>Why no KMS call during rotation</h3>
  * {@code encryptedDek} stored in {@code token_vault} is an AES-256-GCM blob produced by
  * {@link AesGcmCipher#wrapDek} using the in-memory KEK — it is NOT a KMS ciphertext.
- * Both the old and new KEKs are already in {@link InMemoryKeyRing} (loaded from KMS once
+ * Both the old and new KEKs are already in {@link InMemoryKekKeyRing} (loaded from KMS once
  * at startup). Re-wrapping is therefore a purely in-memory operation: unwrap with old KEK,
  * rewrap with new KEK. This keeps KMS calls to 1–2 per startup regardless of vault size.
  *
@@ -79,7 +79,7 @@ public class RotationBatchProcessor {
     private final TokenVaultRepository tokenVaultRepository;
     private final KeyVersionRepository keyVersionRepository;
     private final AesGcmCipher cipher;
-    private final InMemoryKeyRing keyRing;
+    private final InMemoryKekKeyRing keyRing;
     private final AuditLogger auditLogger;
     private final ExecutorService rewrapExecutor;
 
@@ -112,7 +112,7 @@ public class RotationBatchProcessor {
     public RotationBatchProcessor(TokenVaultRepository tokenVaultRepository,
                                    KeyVersionRepository keyVersionRepository,
                                    AesGcmCipher cipher,
-                                   InMemoryKeyRing keyRing,
+                                   InMemoryKekKeyRing keyRing,
                                    AuditLogger auditLogger,
                                    RotationProperties rotationProperties) {
         this.tokenVaultRepository = tokenVaultRepository;

@@ -66,7 +66,7 @@
 └──────────┬───────────────────────────────────────┬────────────┘
            │                                       │
 ┌──────────▼──────────┐               ┌────────────▼───────────┐
-│  InMemoryKeyRing    │               │   TokenVaultRepository  │
+│  InMemoryKekKeyRing    │               │   TokenVaultRepository  │
 │  (startup-loaded    │               │   KeyVersionRepository  │
 │   KEK, versioned)   │               │   AuditLogRepository    │
 └──────────┬──────────┘               └────────────┬───────────┘
@@ -124,7 +124,7 @@ card-tokenisation/
 │   │   │   ├── crypto/
 │   │   │   │   ├── AesGcmCipher.java           # local AES-256-GCM encrypt/decrypt
 │   │   │   │   ├── PanHasher.java              # SHA-256 HMAC of PAN for de-dup
-│   │   │   │   ├── InMemoryKeyRing.java        # versioned in-memory KEK store
+│   │   │   │   ├── InMemoryKekKeyRing.java        # versioned in-memory KEK store
 │   │   │   │   └── KeyRingInitialiser.java     # startup bean, calls KMS once
 │   │   │   │
 │   │   │   ├── kms/
@@ -182,7 +182,7 @@ card-tokenisation/
 │       │   │   └── DetokenisationServiceTest.java
 │       │   ├── crypto/
 │       │   │   ├── AesGcmCipherTest.java
-│       │   │   └── InMemoryKeyRingTest.java
+│       │   │   └── InMemoryKekKeyRingTest.java
 │       │   └── rotation/
 │       │       ├── RotationJobIntegrationTest.java
 │       │       └── TamperDetectorTest.java
@@ -381,7 +381,7 @@ public class LocalDevKmsAdapter implements KmsProvider {
 
 ```java
 @Component
-public class InMemoryKeyRing {
+public class InMemoryKekKeyRing {
 
     private final ConcurrentHashMap<String, KeyMaterial> keys = new ConcurrentHashMap<>();
     private volatile String activeKeyVersionId;
@@ -424,7 +424,7 @@ public class KeyRingInitialiser implements ApplicationRunner {
 
     private final KmsProvider kmsProvider;
     private final KeyVersionRepository keyVersionRepository;
-    private final InMemoryKeyRing keyRing;
+    private final InMemoryKekKeyRing keyRing;
 
     @Override
     public void run(ApplicationArguments args) {
@@ -495,7 +495,7 @@ TokenisationService.tokenise(request):
 3.  If tokenType == RECURRING:
       a. Query token_vault WHERE pan_hash = ? AND merchant_id = ? AND token_type = 'RECURRING' AND is_active = TRUE
       b. If found → return existing token (no new crypto, no new DB write, just audit log)
-4.  Get active KeyMaterial from InMemoryKeyRing
+4.  Get active KeyMaterial from InMemoryKekKeyRing
 5.  Generate fresh 256-bit DEK (random, local — no KMS call)
 6.  Encrypt DEK with KEK using AES-256-GCM → encryptedDek
 7.  Encrypt PAN with DEK using AES-256-GCM → encryptedPan + IV + authTag
@@ -587,7 +587,7 @@ DetokenisationService.detokenise(token, merchantId):
 1.  Look up TokenVault by token value
 2.  Verify is_active = TRUE (return 404 if inactive/expired)
 3.  Verify merchantId matches token's merchant_id (return 403 if mismatch)
-4.  Look up KeyMaterial in InMemoryKeyRing by key_version_id
+4.  Look up KeyMaterial in InMemoryKekKeyRing by key_version_id
       - If key status is COMPROMISED → write TAMPER_ALERT to audit log, throw exception
 5.  Unwrap DEK: AES-GCM decrypt encryptedDek using KEK from key ring
 6.  Decrypt PAN: AES-GCM decrypt encryptedPan using DEK + stored IV + authTag
@@ -656,7 +656,7 @@ KeyRotationService.initiateScheduledRotation():
 
 1.  Call KmsProvider.generateNewKeyVersion() → returns new KMS key ID
 2.  Call KmsProvider.unwrapKek(newEncryptedBlob) → new KEK bytes
-3.  Load new KEK into InMemoryKeyRing (not yet active)
+3.  Load new KEK into InMemoryKekKeyRing (not yet active)
 4.  Persist new KeyVersion record (status = ROTATING)
 5.  Mark old KeyVersion as ROTATING (still valid for decrypt and encrypt)
 6.  Write KEY_ROTATION_STARTED to audit log
@@ -965,7 +965,7 @@ public abstract class AbstractLoadTest {
 |---|---|---|
 | `AesGcmCipherTest` | Unit | Encrypt/decrypt round-trip; IV uniqueness across calls; GCM auth tag failure; DEK zeroed after encrypt; 32-byte key enforced |
 | `PanHasherTest` | Unit | Hash is deterministic; different PANs produce different hashes; hash does not contain PAN substring |
-| `InMemoryKeyRingTest` | Unit | Load + promote; getActive returns correct version; getByVersion for retired key; missing version throws; concurrent load does not corrupt state |
+| `InMemoryKekKeyRingTest` | Unit | Load + promote; getActive returns correct version; getByVersion for retired key; missing version throws; concurrent load does not corrupt state |
 | `TamperDetectorTest` | Unit | Checksum matches on unmodified row; checksum mismatch throws `KeyIntegrityException`; mismatch writes TAMPER_ALERT audit event |
 | `TokenisationServiceTest` | Unit | Recurring PAN returns same token on repeat; ONE_TIME always generates new token; null PAN throws `PanValidationException`; invalid Luhn throws; audit log called on success; audit log called on failure |
 | `DetokenisationServiceTest` | Unit | Correct PAN returned; wrong merchant throws `MerchantScopeException`; inactive token throws `TokenNotFoundException`; compromised key throws and writes audit; tampered ciphertext triggers TAMPER_ALERT |
@@ -1769,7 +1769,7 @@ TokenisationException (base)
 ### 13.4 Immutability & Thread Safety
 
 - Domain objects (`TokenVault`, `KeyVersion`) are immutable once constructed — use Lombok `@Value` or record types where appropriate.
-- `InMemoryKeyRing` operations on the `ConcurrentHashMap` must be atomic — use `computeIfAbsent`, `computeIfPresent`, not separate get/put calls.
+- `InMemoryKekKeyRing` operations on the `ConcurrentHashMap` must be atomic — use `computeIfAbsent`, `computeIfPresent`, not separate get/put calls.
 - `KeyMaterial` holding raw key bytes must be a `final` class with no setters. Expose bytes only through a method that copies the array, not a direct reference.
 
 ### 13.5 Dependency Injection
@@ -1782,13 +1782,13 @@ TokenisationException (base)
 @Service
 public class TokenisationService {
     private final TokenVaultRepository tokenVaultRepository;
-    private final InMemoryKeyRing keyRing;
+    private final InMemoryKekKeyRing keyRing;
     private final AesGcmCipher cipher;
     private final AuditLogger auditLogger;
 
     public TokenisationService(
             TokenVaultRepository tokenVaultRepository,
-            InMemoryKeyRing keyRing,
+            InMemoryKekKeyRing keyRing,
             AesGcmCipher cipher,
             AuditLogger auditLogger) {
         this.tokenVaultRepository = tokenVaultRepository;
@@ -1908,9 +1908,9 @@ Next task: <name of the very next incomplete task>
 ### Crypto Layer
 - [ ] P1-C1 — AesGcmCipher (encrypt, decrypt, wrapDek, unwrapDek) with DEK zeroing
 - [ ] P1-C2 — PanHasher (HMAC-SHA256 of PAN for de-dup)
-- [ ] P1-C3 — InMemoryKeyRing (load, promoteActive, getActive, getByVersion, retire)
+- [ ] P1-C3 — InMemoryKekKeyRing (load, promoteActive, getActive, getByVersion, retire)
 - [ ] P1-C4 — KeyRingInitialiser (ApplicationRunner, startup KMS call)
-- [ ] P1-C5 — Unit tests: AesGcmCipherTest, PanHasherTest, InMemoryKeyRingTest
+- [ ] P1-C5 — Unit tests: AesGcmCipherTest, PanHasherTest, InMemoryKekKeyRingTest
 - [ ] P1-C6 — Integration test: KeyRingInitialiserIntegrationTest
 
 ### Tokenisation Feature
@@ -2006,7 +2006,7 @@ When starting a new session after hitting a token limit:
 ### Phase 1 — Tokenisation
 - [ ] All P1-F, P1-K, P1-C, P1-T tasks marked complete in `progress.md`
 - [ ] `KmsProvider` interface + `LocalDevKmsAdapter` implemented
-- [ ] `InMemoryKeyRing` + `KeyRingInitialiser` implemented and integration tested
+- [ ] `InMemoryKekKeyRing` + `KeyRingInitialiser` implemented and integration tested
 - [ ] `AesGcmCipher` with DEK zeroing — unit tested including zeroing assertion
 - [ ] Flyway migrations V1–V4 applied and validated
 - [ ] `TokenisationService` with deterministic de-dup logic — unit tested

@@ -33,13 +33,10 @@ kms:
 tokenisation:
   # Token format — UUID (default) or LUHN_16
   token-format: UUID
-  # HMAC-SHA256 hashing secret for PAN de-dup — separate from KEK
-  pan-hash-secret: ${PAN_HASH_SECRET}
+  # HMAC-SHA256 hashing secret for PAN de-dup (required on first boot; optional after HMAC key is seeded)
+  pan-hash-secret: ${PAN_HASH_SECRET:#{null}}
   # Default token lifetime (5 years)
   default-token-ttl-days: 1825
-  tamper-detection:
-    # HMAC-SHA256 signing secret for key_versions row integrity checks — separate from KEK and PAN hash secret
-    signing-secret: ${TAMPER_DETECTION_SECRET}
   # Accepted card scheme codes — add entries here to enable additional schemes without code changes
   allowed-card-schemes:
     - MC
@@ -58,6 +55,12 @@ rotation:
     # Parallel virtual threads for DEK rewrap within one batch (must be ≤ hikari pool − 5)
     parallelism: 8
     # 0 = drain all remaining records in one cron invocation; positive = cap batches per tick
+    max-batches-per-run: 0
+  hmac-batch:
+    # Run HMAC rotation batch at 02:00 UTC (off-peak)
+    cron: "0 0 2 * * *"
+    size: 100
+    parallelism: 4
     max-batches-per-run: 0
   compliance:
     max-key-age-days: 365

@@ -61,8 +61,8 @@ class TokenisationIntegrationTest extends AbstractIntegrationTest {
         Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 60 * 60));
         jdbcTemplate.update("""
                 INSERT INTO key_versions (id, kms_key_id, kms_provider, key_alias, encrypted_kek_blob,
-                    status, activated_at, rotate_by, created_by, checksum)
-                VALUES (?::uuid, ?, ?, ?, ?, ?, now(), ?, ?, ?)
+                    key_type, status, activated_at, rotate_by, created_by)
+                VALUES (?::uuid, ?, ?, ?, ?, ?, ?, now(), ?, ?)
                 ON CONFLICT (id) DO NOTHING
                 """,
                 SEED_KEY_VERSION_ID,
@@ -70,10 +70,10 @@ class TokenisationIntegrationTest extends AbstractIntegrationTest {
                 "LOCAL_DEV",
                 "integration-test-seed-key",
                 "ignored",
+                "KEK",
                 "ACTIVE",
                 rotateBy,
-                "test-seeder",
-                "seed-checksum"
+                "test-seeder"
         );
     }
 

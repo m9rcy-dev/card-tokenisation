@@ -1,0 +1,24 @@
+meta {
+  name: HMAC Key Rotation - 400 missing newKeyAlias
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/v1/admin/keys/hmac-keys/rotate
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+  }
+}
+
+assert {
+  res.status: eq 400
+}

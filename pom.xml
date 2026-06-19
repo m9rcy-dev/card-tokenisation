@@ -22,8 +22,8 @@
         <java.version>21</java.version>
         <aws.sdk.version>2.26.7</aws.sdk.version>
         <testcontainers.version>1.21.4</testcontainers.version>
-        <!-- Excluded by default; cleared by the load-tests profile so @Tag("load") tests run -->
-        <surefire.excluded.groups>load</surefire.excluded.groups>
+        <!-- Excluded by default; cleared selectively by load-tests / localstack-tests profiles -->
+        <surefire.excluded.groups>load,localstack</surefire.excluded.groups>
     </properties>
 
     <dependencyManagement>
@@ -129,6 +129,11 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>localstack</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -290,6 +295,33 @@
                                 -Djdk.virtualThreadScheduler.parallelism=256
                                 -Djdk.virtualThreadScheduler.maxPoolSize=512
                             </argLine>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            LocalStack integration test profile — excluded from the standard `mvn test` run.
+            Requires Docker; starts a LocalStack KMS container and a real PostgreSQL container
+            via Testcontainers (all managed inside the test itself — no `make start-localstack` needed).
+            Run explicitly: mvn test -P localstack-tests
+                            make localstack-test
+        -->
+        <profile>
+            <id>localstack-tests</id>
+            <properties>
+                <!-- Run only @Tag("localstack") tests; load tests remain excluded -->
+                <surefire.excluded.groups>load</surefire.excluded.groups>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>localstack</groups>
+                            <argLine>-Xmx1g -Xms256m</argLine>
                         </configuration>
                     </plugin>
                 </plugins>

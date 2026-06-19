@@ -3,6 +3,7 @@ package com.yourorg.tokenisation.repository;
 import com.yourorg.tokenisation.domain.TokenVault;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -88,4 +89,41 @@ public interface TokenVaultRepository extends JpaRepository<TokenVault, UUID> {
               AND tv.isActive = true
             """)
     long countActiveByKeyVersionId(@Param("keyVersionId") UUID keyVersionId);
+
+    // ── HMAC rotation ────────────────────────────────────────────────────────
+
+    /**
+     * Returns a page of active vault records still tagged with the given HMAC key version.
+     * Used by {@code PanHashBatchProcessor} to find records needing re-hashing.
+     */
+    @Query("""
+            SELECT tv FROM TokenVault tv
+            WHERE tv.hmacKeyVersionId = :hmacVersionId
+              AND tv.isActive = true
+            """)
+    List<TokenVault> findActiveByHmacVersionId(
+            @Param("hmacVersionId") UUID hmacVersionId,
+            Pageable pageable);
+
+    /**
+     * Counts active vault records tagged with the given HMAC key version.
+     * Used by the HMAC rotation job to determine when re-hashing is complete.
+     */
+    @Query("""
+            SELECT COUNT(tv) FROM TokenVault tv
+            WHERE tv.hmacKeyVersionId = :hmacVersionId
+              AND tv.isActive = true
+            """)
+    long countActiveByHmacVersionId(@Param("hmacVersionId") UUID hmacVersionId);
+
+    /**
+     * Bulk-assigns the HMAC key version for all active vault records that have no version set yet.
+     * Used by {@code HmacKeyBootstrapService} on first boot to backfill pre-existing rows.
+     */
+    @Modifying
+    @Query("""
+            UPDATE TokenVault tv SET tv.hmacKeyVersionId = :hmacVersionId
+            WHERE tv.isActive = true AND tv.hmacKeyVersionId IS NULL
+            """)
+    int bulkSetHmacVersionId(@Param("hmacVersionId") UUID hmacVersionId);
 }

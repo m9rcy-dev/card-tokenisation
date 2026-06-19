@@ -22,6 +22,7 @@ import org.springframework.stereotype.Component;
 public class RotationProperties {
 
     private Batch batch = new Batch();
+    private HmacBatch hmacBatch = new HmacBatch();
     private Compliance compliance = new Compliance();
 
     /**
@@ -40,6 +41,24 @@ public class RotationProperties {
      */
     public void setBatch(Batch batch) {
         this.batch = batch;
+    }
+
+    /**
+     * Returns the HMAC batch sub-properties.
+     *
+     * @return HMAC batch configuration; never null
+     */
+    public HmacBatch getHmacBatch() {
+        return hmacBatch;
+    }
+
+    /**
+     * Sets the HMAC batch sub-properties.
+     *
+     * @param hmacBatch the HMAC batch configuration; must not be null
+     */
+    public void setHmacBatch(HmacBatch hmacBatch) {
+        this.hmacBatch = hmacBatch;
     }
 
     /**
@@ -186,6 +205,36 @@ public class RotationProperties {
         public void setMaxBatchesPerRun(int maxBatchesPerRun) {
             this.maxBatchesPerRun = maxBatchesPerRun;
         }
+    }
+
+    /**
+     * HMAC re-hashing batch job configuration.
+     */
+    public static class HmacBatch {
+
+        /** Cron expression for the HMAC rotation batch. Use {@code "-"} to disable. */
+        private String cron = "0 0 2 * * *";
+
+        /** Number of vault records to re-hash per batch run. */
+        private int size = 100;
+
+        /** Number of parallel virtual threads per batch (decrypts PAN to re-hash). */
+        private int parallelism = 4;
+
+        /** Max batches per cron invocation; {@code 0} = unlimited. */
+        private int maxBatchesPerRun = 0;
+
+        public String getCron() { return cron; }
+        public void setCron(String cron) { this.cron = cron; }
+
+        public int getSize() { return size; }
+        public void setSize(int size) { this.size = size; }
+
+        public int getParallelism() { return parallelism; }
+        public void setParallelism(int parallelism) { this.parallelism = parallelism; }
+
+        public int getMaxBatchesPerRun() { return maxBatchesPerRun; }
+        public void setMaxBatchesPerRun(int maxBatchesPerRun) { this.maxBatchesPerRun = maxBatchesPerRun; }
     }
 
     /**

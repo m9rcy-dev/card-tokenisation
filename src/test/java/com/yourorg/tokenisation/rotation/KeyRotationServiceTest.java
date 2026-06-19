@@ -3,12 +3,10 @@ package com.yourorg.tokenisation.rotation;
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
-import com.yourorg.tokenisation.crypto.TamperDetector;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.RotationReason;
-import com.yourorg.tokenisation.exception.KeyIntegrityException;
 import com.yourorg.tokenisation.kms.KmsProvider;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,8 +27,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -42,12 +38,10 @@ import static org.mockito.Mockito.when;
  *   <li>Scheduled rotation: old key transitions to ROTATING, new key created as ACTIVE
  *   <li>Scheduled rotation: ring is loaded and promoted
  *   <li>Scheduled rotation: audit event written
- *   <li>Scheduled rotation: integrity check fails — throws {@link KeyIntegrityException}
  *   <li>Emergency rotation: compromised key marked in DB and ring
  *   <li>Emergency rotation: new key loaded and promoted
  *   <li>Emergency rotation: security alert event published
  *   <li>Emergency rotation: audit events written
- *   <li>Emergency rotation: proceeds even if compromised key's checksum is also tampered
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -58,9 +52,8 @@ class KeyRotationServiceTest {
     private static final byte[] DUMMY_KEK   = new byte[32];
 
     @Mock private KeyVersionRepository keyVersionRepository;
-    @Mock private TamperDetector tamperDetector;
     @Mock private KmsProvider kmsProvider;
-    @Mock private InMemoryKeyRing keyRing;
+    @Mock private InMemoryKekKeyRing keyRing;
     @Mock private AuditLogger auditLogger;
     @Mock private ApplicationEventPublisher eventPublisher;
 
@@ -70,7 +63,7 @@ class KeyRotationServiceTest {
     void setUp() {
         RotationProperties props = new RotationProperties();
         props.getCompliance().setMaxKeyAgeDays(365);
-        service = new KeyRotationService(keyVersionRepository, tamperDetector, kmsProvider,
+        service = new KeyRotationService(keyVersionRepository, kmsProvider,
                 keyRing, auditLogger, eventPublisher, props);
     }
 
@@ -80,9 +73,8 @@ class KeyRotationServiceTest {
     void initiateScheduledRotation_transitionsOldKeyToRotating() {
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
         stubSaveToAssignId(NEW_KEY_ID);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeKey);
+        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
         when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
-        when(tamperDetector.computeChecksum(any())).thenReturn("computed-checksum");
 
         service.initiateScheduledRotation("new-key-alias", RotationReason.SCHEDULED);
 
@@ -93,9 +85,8 @@ class KeyRotationServiceTest {
     void initiateScheduledRotation_loadsAndPromotesNewKeyInRing() {
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
         stubSaveToAssignId(NEW_KEY_ID);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeKey);
+        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
         when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
-        when(tamperDetector.computeChecksum(any())).thenReturn("some-checksum");
 
         service.initiateScheduledRotation("new-key-alias", RotationReason.SCHEDULED);
 
@@ -107,9 +98,8 @@ class KeyRotationServiceTest {
     void initiateScheduledRotation_writesKeyRotationStartedAuditEvent() {
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
         stubSaveToAssignId(NEW_KEY_ID);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeKey);
+        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
         when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
-        when(tamperDetector.computeChecksum(any())).thenReturn("checksum");
 
         service.initiateScheduledRotation("new-key-alias", RotationReason.SCHEDULED);
 
@@ -119,34 +109,16 @@ class KeyRotationServiceTest {
     }
 
     @Test
-    void initiateScheduledRotation_integritycheckFails_throwsKeyIntegrityException() {
-        KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeKey);
-        doThrow(new KeyIntegrityException("checksum mismatch"))
-                .when(tamperDetector).assertIntegrity(activeKey);
-
-        assertThatThrownBy(() -> service.initiateScheduledRotation("alias", RotationReason.SCHEDULED))
-                .isInstanceOf(KeyIntegrityException.class);
-
-        verify(keyRing, never()).promoteActive(any());
-    }
-
-    @Test
     void initiateScheduledRotation_kekZeroedAfterRingLoad() {
-        // Verify the byte array returned by unwrapKek is zeroed after loading into the ring.
-        // We check this by capturing the array passed to keyRing.load — it must be all zeros
-        // because the service fills it after loading.
         byte[] capturedKek = new byte[32];
-        capturedKek[0] = 0x42; // non-zero sentinel
+        capturedKek[0] = 0x42;
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
         stubSaveToAssignId(NEW_KEY_ID);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeKey);
+        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
         when(kmsProvider.unwrapKek(any())).thenReturn(capturedKek);
-        when(tamperDetector.computeChecksum(any())).thenReturn("checksum");
 
         service.initiateScheduledRotation("alias", RotationReason.SCHEDULED);
 
-        // After the method completes, capturedKek should be zeroed
         assertThat(capturedKek).containsOnly((byte) 0);
     }
 
@@ -158,7 +130,6 @@ class KeyRotationServiceTest {
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
         when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
-        when(tamperDetector.computeChecksum(any())).thenReturn("checksum");
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
@@ -171,7 +142,6 @@ class KeyRotationServiceTest {
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
         when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
-        when(tamperDetector.computeChecksum(any())).thenReturn("checksum");
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
@@ -184,7 +154,6 @@ class KeyRotationServiceTest {
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
         when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
-        when(tamperDetector.computeChecksum(any())).thenReturn("checksum");
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
@@ -193,12 +162,11 @@ class KeyRotationServiceTest {
     }
 
     @Test
-    void initiateEmergencyRotation_writesEmergencyRotationStartedAudit() {
+    void initiateEmergencyRotation_writesEmergencyRotationStartedAndKeyIntegrityViolationAudit() {
         KeyVersion compromisedKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
         when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
-        when(tamperDetector.computeChecksum(any())).thenReturn("checksum");
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
@@ -215,32 +183,12 @@ class KeyRotationServiceTest {
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
         when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
-        when(tamperDetector.computeChecksum(any())).thenReturn("checksum");
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
         ArgumentCaptor<SecurityAlertEvent> eventCaptor = ArgumentCaptor.forClass(SecurityAlertEvent.class);
         verify(eventPublisher).publishEvent(eventCaptor.capture());
         assertThat(eventCaptor.getValue().getCompromisedKeyVersionId()).isEqualTo(ACTIVE_KEY_ID);
-    }
-
-    @Test
-    void initiateEmergencyRotation_proceededEvenIfCompromisedKeyChecksumAlsoTampered() {
-        // If the checksum on the compromised key is ALSO tampered, the emergency rotation
-        // should still proceed — the compromise response is more important than the checksum.
-        KeyVersion compromisedKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
-        stubSaveToAssignId(NEW_KEY_ID);
-        when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
-        doThrow(new KeyIntegrityException("checksum also tampered"))
-                .when(tamperDetector).assertIntegrity(compromisedKey);
-        when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
-        when(tamperDetector.computeChecksum(any())).thenReturn("checksum");
-
-        // Should NOT throw — proceeds despite the integrity exception on the compromised key
-        service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
-
-        verify(keyRing).markCompromised(ACTIVE_KEY_ID.toString());
-        verify(keyRing).promoteActive(NEW_KEY_ID.toString());
     }
 
     @Test
@@ -257,15 +205,15 @@ class KeyRotationServiceTest {
     @Test
     void getActiveKeyVersionId_activeKeyExists_returnsItsUuid() {
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeKey);
+        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
 
         assertThat(service.getActiveKeyVersionId()).isEqualTo(ACTIVE_KEY_ID);
     }
 
     @Test
     void getActiveKeyVersionId_noActiveKey_propagatesIllegalStateException() {
-        when(keyVersionRepository.findActiveOrThrow())
-                .thenThrow(new IllegalStateException("No ACTIVE key version found"));
+        when(keyVersionRepository.findActiveKekOrThrow())
+                .thenThrow(new IllegalStateException("No ACTIVE KEK version found"));
 
         assertThatThrownBy(() -> service.getActiveKeyVersionId())
                 .isInstanceOf(IllegalStateException.class);
@@ -283,7 +231,6 @@ class KeyRotationServiceTest {
                 .activatedAt(Instant.now().minusSeconds(3600))
                 .rotateBy(Instant.now().plusSeconds(86400 * 365))
                 .createdBy("test")
-                .checksum("valid-checksum")
                 .build();
         try {
             Field idField = KeyVersion.class.getDeclaredField("id");
@@ -295,11 +242,6 @@ class KeyRotationServiceTest {
         return kv;
     }
 
-    /**
-     * Stubs {@code keyVersionRepository.save()} to assign the given UUID to the saved
-     * {@code KeyVersion} entity (simulating JPA's UUID generation on first persist).
-     * Subsequent save() calls (for checksum updates) return the same entity unchanged.
-     */
     private void stubSaveToAssignId(UUID newId) {
         when(keyVersionRepository.save(any(KeyVersion.class))).thenAnswer(invocation -> {
             KeyVersion kv = invocation.getArgument(0);

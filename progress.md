@@ -54,9 +54,9 @@
 
 - [x] P1-C1 — `AesGcmCipher` (`encrypt`, `decrypt`, `wrapDek`, `unwrapDek`) with DEK zeroing in try/finally
 - [x] P1-C2 — `PanHasher` (HMAC-SHA256 of PAN for deterministic de-dup)
-- [x] P1-C3 — `InMemoryKeyRing` (`load`, `promoteActive`, `getActive`, `getByVersion`, `retire`)
+- [x] P1-C3 — `InMemoryKekKeyRing` (`load`, `promoteActive`, `getActive`, `getByVersion`, `retire`)
 - [x] P1-C4 — `KeyRingInitialiser` (`ApplicationRunner` — calls KMS once at startup)
-- [x] P1-C5 — Unit tests: `AesGcmCipherTest`, `PanHasherTest`, `InMemoryKeyRingTest`
+- [x] P1-C5 — Unit tests: `AesGcmCipherTest`, `PanHasherTest`, `InMemoryKekKeyRingTest`
 - [x] P1-C6 — Integration test: `KeyRingInitialiserIntegrationTest`
 
 ### Tokenisation Feature

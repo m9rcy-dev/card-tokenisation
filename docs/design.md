@@ -242,7 +242,7 @@ The `signingSecret` is separate from the KEK and the PAN hash secret — three d
 │   Crypto Layer  │   │   KMS Layer      │   │   Monitoring Layer          │
 │  AesGcmCipher   │   │  KmsProvider     │   │  HealthService              │
 │  PanHasher      │   │  AwsKmsAdapter   │   │  MetricsCollector           │
-│  InMemoryKeyRing│   │  LocalDevAdapter │   │  MetricsInterceptor         │
+│  InMemoryKekKeyRing│   │  LocalDevAdapter │   │  MetricsInterceptor         │
 │  TamperDetector │   │                  │   │                             │
 └────────┬────────┘   └────────┬─────────┘   └─────────────────────────────┘
          │                     │

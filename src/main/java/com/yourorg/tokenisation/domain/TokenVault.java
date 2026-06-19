@@ -99,6 +99,15 @@ public class TokenVault {
     private String panHash;
 
     /**
+     * UUID of the {@link KeyVersion} (type HMAC) whose secret produced {@code panHash}.
+     * Nullable on rows created before HMAC versioning was introduced; backfilled by
+     * {@code HmacKeyBootstrapService} on first boot.
+     * Used by the HMAC rotation batch to identify which vault rows need re-hashing.
+     */
+    @Column(name = "hmac_key_version_id")
+    private UUID hmacKeyVersionId;
+
+    /**
      * Last four digits of the PAN, stored in clear.
      * Not sensitive — used for display purposes (e.g. "Card ending in 1111").
      * Updated during card replacement ({@link #replacePanFields}).
@@ -178,6 +187,7 @@ public class TokenVault {
             byte[] encryptedDek,
             KeyVersion keyVersion,
             String panHash,
+            UUID hmacKeyVersionId,
             String lastFour,
             String cardScheme,
             Short expiryMonth,
@@ -191,6 +201,7 @@ public class TokenVault {
         this.encryptedDek = encryptedDek.clone();
         this.keyVersion = keyVersion;
         this.panHash = panHash;
+        this.hmacKeyVersionId = hmacKeyVersionId;
         this.lastFour = lastFour;
         this.cardScheme = cardScheme;
         this.expiryMonth = expiryMonth;
@@ -199,6 +210,18 @@ public class TokenVault {
         this.expiresAt = expiresAt;
         this.isActive = true;
         this.recordVersion = 1;
+    }
+
+    /**
+     * Updates the {@code panHash} and records which HMAC key version produced it.
+     * Called by {@code PanHashBatchProcessor} during HMAC key rotation.
+     *
+     * @param newPanHash       new HMAC-SHA256 of the PAN under the new HMAC key
+     * @param newHmacVersionId UUID of the new HMAC key version row
+     */
+    public void updatePanHash(String newPanHash, UUID newHmacVersionId) {
+        this.panHash = newPanHash;
+        this.hmacKeyVersionId = newHmacVersionId;
     }
 
     /**

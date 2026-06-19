@@ -6,6 +6,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.kms.KmsClient;
+import software.amazon.awssdk.services.kms.KmsClientBuilder;
+
+import java.net.URI;
 
 /**
  * Spring configuration for the AWS KMS client.
@@ -28,10 +31,23 @@ public class KmsConfig {
      * @param awsRegion the AWS region where the KMS key resides; from {@code kms.aws.region}
      * @return a configured {@link KmsClient} ready for KMS API calls
      */
+    /**
+     * Creates an AWS KMS client. When {@code kms.aws.endpoint-override} is set the client
+     * points to that URL instead of real AWS — used for LocalStack in local/CI environments.
+     *
+     * @param awsRegion        the AWS region; from {@code kms.aws.region}
+     * @param endpointOverride optional endpoint URL (e.g. {@code http://localhost:4566} for LocalStack)
+     * @return a configured {@link KmsClient}
+     */
     @Bean
-    public KmsClient kmsClient(@Value("${kms.aws.region}") String awsRegion) {
-        return KmsClient.builder()
-                .region(Region.of(awsRegion))
-                .build();
+    public KmsClient kmsClient(
+            @Value("${kms.aws.region}") String awsRegion,
+            @Value("${kms.aws.endpoint-override:#{null}}") String endpointOverride) {
+        KmsClientBuilder builder = KmsClient.builder()
+                .region(Region.of(awsRegion));
+        if (endpointOverride != null && !endpointOverride.isBlank()) {
+            builder.endpointOverride(URI.create(endpointOverride));
+        }
+        return builder.build();
     }
 }

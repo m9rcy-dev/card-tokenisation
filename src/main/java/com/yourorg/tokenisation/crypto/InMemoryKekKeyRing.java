@@ -22,10 +22,13 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>Key material bytes are held in {@link KeyMaterial#copyKek()} — the caller receives
  * a defensive copy and is responsible for zeroing it after use.
+ *
+ * @see InMemoryHmacKeyRing for the HMAC-specific ring
+ * @see KeyRing for the shared lifecycle interface
  */
 @Component
 @Slf4j
-public class InMemoryKeyRing {
+public class InMemoryKekKeyRing implements KeyRing {
 
     private final ConcurrentHashMap<String, KeyMaterial> keyMaterials = new ConcurrentHashMap<>();
     private volatile String activeKeyVersionId;
@@ -43,6 +46,7 @@ public class InMemoryKeyRing {
      * @param expiresAt    the TTL after which this entry must be refreshed; must not be null
      * @throws IllegalArgumentException if {@code kek} is not 32 bytes
      */
+    @Override
     public void load(String keyVersionId, byte[] kek, Instant expiresAt) {
         KeyMaterial keyMaterial = new KeyMaterial(keyVersionId, kek, expiresAt);
         keyMaterials.put(keyVersionId, keyMaterial);
@@ -59,6 +63,7 @@ public class InMemoryKeyRing {
      * @param keyVersionId the key version to promote; must already be loaded in the ring
      * @throws IllegalStateException if the key version has not been loaded
      */
+    @Override
     public void promoteActive(String keyVersionId) {
         if (!keyMaterials.containsKey(keyVersionId)) {
             throw new IllegalStateException("Cannot promote key version that is not loaded in the ring: " + keyVersionId);
@@ -111,6 +116,7 @@ public class InMemoryKeyRing {
      *
      * @param keyVersionId the key version UUID to retire; must not be null
      */
+    @Override
     public void retire(String keyVersionId) {
         // computeIfPresent is atomic — no separate get/put race
         keyMaterials.computeIfPresent(keyVersionId, (id, existing) -> existing.asRetired());
@@ -144,6 +150,7 @@ public class InMemoryKeyRing {
      * @param keyVersionId the key version UUID to check
      * @return {@code true} if the version is loaded in the ring
      */
+    @Override
     public boolean contains(String keyVersionId) {
         return keyMaterials.containsKey(keyVersionId);
     }

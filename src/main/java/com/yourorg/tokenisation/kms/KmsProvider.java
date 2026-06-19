@@ -28,7 +28,7 @@ public interface KmsProvider {
      * Decrypts a stored KEK ciphertext blob and returns the raw KEK bytes.
      *
      * <p>Called once per key version at application startup by {@code KeyRingInitialiser}.
-     * The returned bytes are held in the {@code InMemoryKeyRing} for the application's lifetime
+     * The returned bytes are held in the {@code InMemoryKekKeyRing} for the application's lifetime
      * (or until TTL refresh). The caller is responsible for not logging the returned bytes.
      *
      * @param encryptedKekBlob Base64-encoded KEK ciphertext as stored in {@code key_versions.encrypted_kek_blob};

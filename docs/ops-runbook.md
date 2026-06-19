@@ -69,8 +69,7 @@ All secrets must come from a secrets manager, not environment variables directly
 | Secret | Recommended Source |
 |--------|--------------------|
 | `DATASOURCE_PASSWORD` | AWS Secrets Manager / Vault |
-| `PAN_HASH_SECRET` | AWS Secrets Manager / Vault |
-| `TAMPER_DETECTION_SECRET` | AWS Secrets Manager / Vault |
+| `PAN_HASH_SECRET` | AWS Secrets Manager / Vault — only required on **first boot** to bootstrap the HMAC key; remove after first HMAC rotation completes |
 | `AWS_KMS_KEY_ARN` | AWS Parameter Store |
 | SSL keystore password | AWS Secrets Manager |
 
@@ -618,30 +617,24 @@ the server crashes within ~200ms. For the tokenisation vault:
 
 ### 3.4 Index Strategy
 
-The existing indexes in `V4__create_indexes.sql` cover the hot paths. Key additions for production:
+The existing indexes in `V4__create_indexes.sql` and `V7__simplify_token_vault.sql` cover the hot paths. Additional indexes for production volume:
 
 ```sql
--- Partial index: only ACTIVE tokens — dramatically smaller index for recurring dedup lookup
-CREATE UNIQUE INDEX CONCURRENTLY idx_tv_active_recurring_pan_merchant
-    ON token_vault (pan_hash, merchant_id)
-    WHERE is_active = true AND token_type = 'RECURRING';
-
 -- Partial index: only tokens still on old key version — used by rotation batch SELECT
--- (already covered by idx_tv_key_version_id, but a partial on is_active=true is faster)
+-- The partial on is_active=true keeps the index small as old tokens are deactivated
 CREATE INDEX CONCURRENTLY idx_tv_active_by_key_version
     ON token_vault (key_version_id)
+    WHERE is_active = true;
+
+-- Partial index: tokens still on rotating HMAC version — used by HMAC batch SELECT
+CREATE INDEX CONCURRENTLY idx_tv_active_by_hmac_version
+    ON token_vault (hmac_key_version_id)
     WHERE is_active = true;
 
 -- Covering index for audit log time-range queries (compliance reporting)
 CREATE INDEX CONCURRENTLY idx_tal_created_at_event_type
     ON token_audit_log (created_at DESC, event_type);
 ```
-
-> **Important:** The unique partial index on `(pan_hash, merchant_id) WHERE is_active AND RECURRING`
-> is also the database-level guard against the RECURRING duplicate race condition. Without it, a
-> concurrent race between two identical tokenisation requests can produce two RECURRING tokens and
-> cause `NonUniqueResultException` on the next lookup. With the unique index, one of the two inserts
-> will fail with a unique violation — the application must handle this by retrying the lookup.
 
 ### 3.5 PgBouncer (Connection Pooling Proxy)
 
@@ -723,10 +716,10 @@ Old partitions can be archived (e.g., to S3 via `COPY TO`) after the 7-year rete
 | Detokenisation 5xx rate | > 0.5% | HIGH | Merchant impact |
 | HikariCP active connections | > 90% of pool | WARN | Pool exhaustion approaching |
 | HikariCP pending threads | > 0 sustained 1 min | HIGH | Pool exhausted |
-| Key rotation lag | tokens on old key > 0 for > 2 hours | WARN | Rotation batch stalled |
+| KEK rotation lag | tokens on old key > 0 for > 2 hours | WARN | Rotation batch stalled |
+| HMAC rotation lag | vault rows on rotating HMAC version > 0 for > 24 hours | WARN | HMAC batch stalled |
 | Audit write failures | any | HIGH | Compliance log gap |
 | Health endpoint status | not UP for > 30s | HIGH | Service unavailable |
-| Tamper alert events in audit log | any | CRITICAL | Immediate investigation |
 | p99 tokenisation latency | > 500ms | WARN | DB or crypto slowdown |
 
 ### 4.2 Spring Boot Actuator
@@ -803,16 +796,21 @@ Add dependency:
 
 ### 4.5 Audit Log Alerting
 
-Query the `token_audit_log` table periodically for tamper events:
+Query the `token_audit_log` table periodically for abnormal events:
 
 ```sql
--- Run as a CloudWatch metric filter or scheduled job
+-- Rotation stall detection — HMAC re-hash batch not making progress
 SELECT COUNT(*) FROM token_audit_log
-WHERE event_type = 'TAMPER_ALERT'
+WHERE event_type = 'PAN_HASH_RECOMPUTED'
+  AND created_at > NOW() - INTERVAL '1 hour';
+
+-- Skipped re-hashes during HMAC rotation (KEK compromised mid-batch)
+SELECT COUNT(*) FROM token_audit_log
+WHERE event_type = 'RE_HASH_SKIPPED_COMPROMISED_KEY'
   AND created_at > NOW() - INTERVAL '1 hour';
 ```
 
-Alert if count > 0 with severity CRITICAL.
+A non-zero `RE_HASH_SKIPPED_COMPROMISED_KEY` count means a KEK was marked COMPROMISED while the HMAC batch was running. Complete the KEK rotation first, then resume the HMAC batch.
 
 ---
 
@@ -995,18 +993,15 @@ The `/api/v1/health` endpoint returns `DEGRADED` with one or more checks DOWN.
 | `keyRing: DOWN` | No ACTIVE key in DB | Check key_versions table; re-run initialiser |
 | `keyRing: DOWN` | Key ring not loaded in memory | Check startup logs for KMS errors; restart |
 
-### 7.4 Tamper Alert in Audit Log
+### 7.4 HMAC Key Startup Failure
 
-If `event_type = 'TAMPER_ALERT'` appears in `token_audit_log`:
+If the application fails to start with `AES-GCM auth tag mismatch` during HMAC ring initialisation:
 
-1. **Do not restart the application** — preserve the in-memory state for forensics.
-2. Identify which `key_version_id` was flagged.
-3. Query `key_versions` to inspect `checksum` and `updated_at`.
-4. Compare checksum against a fresh HMAC-SHA256 computation from known-good key fields.
-5. If tampering is confirmed:
-   - Mark the key `COMPROMISED` via the emergency rotation endpoint.
-   - Escalate to the security team and PCI-DSS QSA.
-   - Initiate a full audit log review for the affected time window.
+1. **Do not restart in a loop** — each attempt logs evidence that may be needed.
+2. The `encrypted_secret` column of an HMAC `key_versions` row has been modified — GCM auth tags detect any byte-level change.
+3. Restore the affected row from the last known-good database backup.
+4. If a backup is unavailable, initiate an emergency KEK rotation and re-seed the HMAC key via `LocalDevHmacKeySeeder` (local dev) or `HmacKeyBootstrapService` (production with `PAN_HASH_SECRET`). Note: all existing `pan_hash` values will be invalidated — de-duplication lookups will fail until the HMAC rotation batch completes.
+5. Escalate to the security team — a modified HMAC key row indicates unauthorized DB access.
 
 ---
 
@@ -1017,8 +1012,7 @@ If `event_type = 'TAMPER_ALERT'` appears in `token_audit_log`:
 | `DATASOURCE_URL` | Yes | `jdbc:postgresql://<host>:<port>/<db>` |
 | `DATASOURCE_USER` | Yes | `tokenisation_app` |
 | `DATASOURCE_PASSWORD` | Yes | From secrets manager |
-| `PAN_HASH_SECRET` | Yes | 32+ byte random string; never reuse across environments |
-| `TAMPER_DETECTION_SECRET` | Yes | 32+ byte random string; different from PAN hash secret |
+| `PAN_HASH_SECRET` | First boot only | 32+ byte random string — bootstraps the initial HMAC key row; remove after first HMAC rotation |
 | `KMS_PROVIDER` | Yes | `aws` in production |
 | `AWS_REGION` | Yes (if aws) | e.g. `ap-southeast-2` |
 | `AWS_KMS_KEY_ARN` | Yes (if aws) | Full ARN of the CMK |
@@ -1033,11 +1027,10 @@ If `event_type = 'TAMPER_ALERT'` appears in `token_audit_log`:
 The application will **fail to start** (intentionally) if any of these are missing or invalid:
 
 - `DATASOURCE_URL`, `DATASOURCE_USER`, `DATASOURCE_PASSWORD` — Flyway and HikariCP will throw
-- `PAN_HASH_SECRET` — Spring will throw on unresolved property placeholder
-- `TAMPER_DETECTION_SECRET` — Same as above
 - `KMS_LOCAL_DEV_KEK_HEX` when `KMS_PROVIDER=local-dev` — No fallback (removed in §1.1)
 - KMS unreachable at startup — `KeyRingInitialiser` throws and stops context load
-- No `ACTIVE` key version in `key_versions` — `KeyRingInitialiser` throws
+- No `ACTIVE` KEK row in `key_versions` — `KeyRingInitialiser` throws
+- No `ACTIVE` HMAC row in `key_versions` and `PAN_HASH_SECRET` not set — `HmacKeyBootstrapService` logs a warning and tokenisation will fail at runtime (not startup)
 
 This fail-fast behaviour is intentional. A partially initialised tokenisation service that
 accepts requests but cannot encrypt or decrypt is more dangerous than one that refuses to start.

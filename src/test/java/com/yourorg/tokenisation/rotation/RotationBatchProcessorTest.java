@@ -4,7 +4,7 @@ import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
@@ -61,7 +61,7 @@ class RotationBatchProcessorTest {
     @Mock private TokenVaultRepository tokenVaultRepository;
     @Mock private KeyVersionRepository keyVersionRepository;
     @Mock private AesGcmCipher cipher;
-    @Mock private InMemoryKeyRing keyRing;
+    @Mock private InMemoryKekKeyRing keyRing;
     @Mock private AuditLogger auditLogger;
 
     private RotationBatchProcessor processor;
@@ -232,7 +232,7 @@ class RotationBatchProcessorTest {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /**
-     * Stubs {@link InMemoryKeyRing#getByVersion} to return real {@link KeyMaterial} instances
+     * Stubs {@link InMemoryKekKeyRing#getByVersion} to return real {@link KeyMaterial} instances
      * for both the old and new key version IDs.
      *
      * <p>The KEK bytes are all-zero 32-byte arrays — the cipher itself is mocked so the
@@ -255,7 +255,6 @@ class RotationBatchProcessorTest {
                 .activatedAt(Instant.now().minusSeconds(3600))
                 .rotateBy(Instant.now().plusSeconds(86400))
                 .createdBy("test")
-                .checksum("checksum")
                 .build();
         try {
             Field idField = KeyVersion.class.getDeclaredField("id");

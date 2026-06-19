@@ -3,6 +3,7 @@ package com.yourorg.tokenisation.api;
 import com.yourorg.tokenisation.config.DetokenisationProperties;
 import com.yourorg.tokenisation.config.SecurityConfig;
 import com.yourorg.tokenisation.monitoring.MetricsCollector;
+import com.yourorg.tokenisation.rotation.HmacRotationService;
 import com.yourorg.tokenisation.rotation.KeyRotationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,6 +46,9 @@ class AdminKeyControllerTest {
 
     @MockBean
     private KeyRotationService keyRotationService;
+
+    @MockBean
+    private HmacRotationService hmacRotationService;
 
     @MockBean
     private DetokenisationProperties detokenisationProperties;

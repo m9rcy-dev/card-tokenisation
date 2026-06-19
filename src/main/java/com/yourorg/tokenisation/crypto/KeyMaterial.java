@@ -8,7 +8,7 @@ import java.util.Arrays;
 /**
  * Holds the in-memory representation of a loaded Key Encryption Key (KEK).
  *
- * <p>Instances of this class are stored in {@link InMemoryKeyRing} and are created
+ * <p>Instances of this class are stored in {@link InMemoryKekKeyRing} and are created
  * once at startup (or during rotation) when the KEK bytes are unwrapped from KMS.
  *
  * <p>The raw KEK bytes are held in a private {@code byte[]} field. Access is provided

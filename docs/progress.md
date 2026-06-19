@@ -5,9 +5,9 @@
 > and the clean code checklist (PLAN.md §13) are **all** satisfied.
 > Partial work stays `[ ]` — no exceptions.
 
-**Last updated:** 2026-06-08 NZST  
-**Current phase:** Feature 03 — Vault Simplification & Token Lifecycle  
-**Next task:** All Feature 03 tasks complete — integration tests require Docker to run
+**Last updated:** 2026-06-20 NZST  
+**Current phase:** Feature 05 — HMAC Key Versioning & TamperDetector Removal  
+**Next task:** HMAC rotation service + PanHashBatchProcessor + HmacRotationJob (Phase 2 components)
 
 ---
 
@@ -50,9 +50,9 @@
 
 - [ ] P1-C1 — `AesGcmCipher` (`encrypt`, `decrypt`, `wrapDek`, `unwrapDek`) with DEK zeroing in try/finally
 - [ ] P1-C2 — `PanHasher` (HMAC-SHA256 of PAN for deterministic de-dup)
-- [ ] P1-C3 — `InMemoryKeyRing` (`load`, `promoteActive`, `getActive`, `getByVersion`, `retire`)
+- [ ] P1-C3 — `InMemoryKekKeyRing` (`load`, `promoteActive`, `getActive`, `getByVersion`, `retire`)
 - [ ] P1-C4 — `KeyRingInitialiser` (`ApplicationRunner` — calls KMS once at startup)
-- [ ] P1-C5 — Unit tests: `AesGcmCipherTest`, `PanHasherTest`, `InMemoryKeyRingTest`
+- [ ] P1-C5 — Unit tests: `AesGcmCipherTest`, `PanHasherTest`, `InMemoryKekKeyRingTest`
 - [ ] P1-C6 — Integration test: `KeyRingInitialiserIntegrationTest`
 
 ### Tokenisation Feature
@@ -236,13 +236,19 @@ See `docs/feature-02.md` for full spec. See `docs/feature-02-plan.md` for origin
 > **Update this section before ending every session.**
 > The next session reads this before anything else.
 
-- **Current state:** Feature 03 fully implemented — vault simplified, token lifecycle enforced
-- **Immediate next step:** Run with Docker available:
-  1. `mvn test` — full suite (Docker required for integration tests)
-  2. `mvn test -P load-tests -Dtest="KeyRotationUnderLoadTest"` — load test regression
-  3. `make start && make gatling-test GATLING_SCALE=20k` — Gatling smoke
-- **Unit tests (no Docker):** 162 tests pass — `mvn test -Dtest="*ServiceTest,*ProcessorTest,*DetectorTest,*CipherTest,*HasherTest,*KeyRingTest,*RotationServiceTest,*KmsAdapterTest,*ControllerTest"`
-- **Context:** Feature 03 removed token_type and merchant_id from the vault (single-tenant, always-deterministic). Added expiry enforcement, DELETE /api/v1/tokens/{token} revocation, and card scheme allowlist validation. See docs/feature-03-plan.md for full details.
+- **Current state:** Feature 05 Phase 1 complete — TamperDetector removed, HMAC keys versioned in `key_versions` table, integration tests passing with Docker
+- **Immediate next step (Phase 2):** Implement HMAC rotation components:
+  1. `HmacRotationService.java` — orchestrates rotation (generate new key, persist, load ring)
+  2. `PanHashBatchProcessor.java` — re-hashes vault records in batches with per-record audit
+  3. `HmacRotationJob.java` — scheduled job driving the batch; checks completion; retires old HMAC key
+  4. `RotateHmacKeyRequest.java` — request DTO
+  5. Add `POST /api/v1/admin/hmac-keys/rotate` to `AdminKeyController`
+  6. Dual-lookup dedup in `TokenisationService` during rotation window
+  7. Unit tests: `InMemoryHmacKeyRingTest`, `HmacRotationServiceTest`, `PanHashBatchProcessorTest`
+  8. Integration test: `HmacRotationIntegrationTest`
+- **Unit tests (no Docker):** 72 tests pass with `mvn test -Dtest="*ServiceTest,*ProcessorTest,*CipherTest,*HasherTest,*KeyRingTest,*RotationServiceTest,*KmsAdapterTest,*ControllerTest"`
+- **Integration tests:** Require Docker. `mvn clean test` runs all 246 tests.
+- **Context:** Feature 05 added `key_type IN ('KEK','HMAC')` discriminator to `key_versions`. HMAC secrets encrypted under KEK via `AesGcmCipher.encryptBytes`. `PanHasher.hash()` now returns `HashResult(hash, hmacVersionId)`. `InMemoryHmacKeyRing` mirrors `InMemoryKekKeyRing`. See `docs/feature-05-plan.md`.
 
 ---
 
@@ -276,3 +282,63 @@ See `docs/feature-03-plan.md` for full spec.
 - [x] F3-16 — `docs/feature-03-plan.md` created
 - [x] F3-17 — `docs/progress.md` updated
 - [x] F3-18 — Bruno collections updated (removed merchant headers, removed ONE_TIME/RECURRING fields)
+
+---
+
+## Feature 05 — HMAC Key Versioning & TamperDetector Removal
+
+See `docs/feature-05-plan.md` for full spec.
+
+### Removed
+
+- [x] F5-1 — `TamperDetector.java` — deleted; DB-level access controls enforce integrity
+- [x] F5-2 — `TamperDetectionProperties.java` — deleted; no longer used
+- [x] F5-3 — `checksum` column from `key_versions` — dropped by V8 migration
+- [x] F5-4 — `TAMPER_DETECTION_SECRET` env var — no longer required
+- [x] F5-5 — `@Mock TamperDetector` from all unit tests (`KeyRotationServiceTest`, load tests)
+- [x] F5-6 — `TamperedKeyUnderLoadTest.java` — deleted; tested TamperDetector which no longer exists
+- [x] F5-7 — `.checksum(...)` builder calls removed from `DetokenisationServiceTest`, `TokenisationServiceTest`, `RotationBatchProcessorTest`, `KeyRotationServiceTest`
+- [x] F5-8 — Tamper alert sections from `ops-runbook.md` and `key-rotation-runbook.md`
+
+### Added
+
+- [x] F5-9 — `V8__add_hmac_key_type.sql` — adds `key_type`, `encrypted_secret`, `encrypting_kek_id`; drops `checksum`; per-type unique index
+- [x] F5-10 — `V9__add_hmac_version_to_vault.sql` — adds `hmac_key_version_id` FK to `token_vault`
+- [x] F5-11 — `V10__relax_kek_only_constraints.sql` — makes `kms_key_id`, `kms_provider`, `encrypted_kek_blob` nullable for HMAC rows
+- [x] F5-12 — `KeyType.java` enum — `KEK` | `HMAC`
+- [x] F5-13 — `KeyVersion.forHmac()` factory method; `encryptedSecret`/`encryptingKekId` fields
+- [x] F5-14 — `KeyVersionRepository` — type-scoped queries: `findActiveKek`, `findActiveKekOrThrow`, `findActiveHmac`, `findActiveHmacOrThrow`, `findHmacByStatusIn`
+- [x] F5-15 — `TokenVaultRepository` — `findActiveByHmacVersionId`, `countActiveByHmacVersionId`, `bulkSetHmacVersionId`
+- [x] F5-16 — `AesGcmCipher.encryptBytes` / `decryptBytes` — no-length-restriction GCM for HMAC secrets
+- [x] F5-17 — `HashResult.java` record — `(String hash, String hmacVersionId)`
+- [x] F5-18 — `InMemoryHmacKeyRing.java` — mirrors `InMemoryKekKeyRing` for HMAC secrets
+- [x] F5-19 — `PanHasher.java` — rewritten to use `InMemoryHmacKeyRing`; `hash()` returns `HashResult`; added `hashWithVersion()`
+- [x] F5-20 — `KeyRingInitialiser.java` — Phase 1 (KEK ring) + Phase 2 (HMAC ring); `@Order(10)`
+- [x] F5-21 — `LocalDevHmacKeySeeder.java` — seeds fixed HMAC row (UUID `00000000-0000-0000-0000-000000000002`) for local dev/tests
+- [x] F5-22 — `HmacKeyBootstrapService.java` — migrates `PAN_HASH_SECRET` env var → HMAC key row on first boot; idempotent
+- [x] F5-23 — `TokenisationService` — consumes `HashResult`; stores `hmacKeyVersionId` on vault; `replaceCard` updates HMAC version
+- [x] F5-24 — `AuditEventType` — added `HMAC_ROTATION_STARTED`, `HMAC_ROTATION_COMPLETED`, `PAN_HASH_RECOMPUTED`, `RE_HASH_SKIPPED_COMPROMISED_KEY`
+- [x] F5-25 — `RotationProperties.HmacBatch` inner class with cron/size/parallelism/maxBatchesPerRun
+- [x] F5-26 — `docker-compose.yml` — Postgres + app for local runs
+- [x] F5-27 — `docs/key-rotation-runbook.md` — added HMAC rotation section (§4), updated troubleshooting
+- [x] F5-28 — `docs/ops-runbook.md` — removed TamperDetector references, updated env vars and monitoring tables
+
+### Tests
+
+- [x] F5-29 — `PanHasherTest` — rewritten to use `InMemoryHmacKeyRing`; tests `HashResult` return type
+- [x] F5-30 — `KeyRotationServiceTest` — removed TamperDetector; 12 tests pass
+- [x] F5-31 — `TokenisationServiceTest` — updated stubs for `HashResult`; 25 tests pass
+- [x] F5-32 — `KeyRingInitialiserIntegrationTest` — updated constructor (5 args); fixed SQL INSERTs (removed checksum, added key_type)
+- [x] F5-33 — `BulkTokenSeeder` — `panHasher.hash(pan).hash()` to unwrap `HashResult`
+- [x] `ScheduledRotationIntegrationTest`, `EmergencyRotationIntegrationTest`, `KeyRotationUnderLoadTest` — scoped KEK SQL to `key_type='KEK'`; removed TamperDetector
+
+### Pending (Phase 2 — HMAC Rotation Components)
+
+- [ ] F5-P2-1 — `HmacRotationService.java`
+- [ ] F5-P2-2 — `PanHashBatchProcessor.java`
+- [ ] F5-P2-3 — `HmacRotationJob.java`
+- [ ] F5-P2-4 — `RotateHmacKeyRequest.java` DTO
+- [ ] F5-P2-5 — `POST /api/v1/admin/hmac-keys/rotate` in `AdminKeyController`
+- [ ] F5-P2-6 — Dual-lookup dedup in `TokenisationService` during rotation window
+- [ ] F5-P2-7 — Unit tests: `InMemoryHmacKeyRingTest`, `HmacRotationServiceTest`, `PanHashBatchProcessorTest`
+- [ ] F5-P2-8 — Integration test: `HmacRotationIntegrationTest`

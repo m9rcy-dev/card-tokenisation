@@ -22,10 +22,10 @@ kms:
 
 tokenisation:
   token-format: UUID
-  pan-hash-secret: test-hmac-secret-32-bytes-exactly!!
+  # Null by default — HmacKeyBootstrapService reads this only if no HMAC row exists yet.
+  # Tests seed the HMAC row directly via TestDataSeederConfig so this is not needed at runtime.
+  pan-hash-secret: ${PAN_HASH_SECRET:#{null}}
   default-token-ttl-days: 1825
-  tamper-detection:
-    signing-secret: test-tamper-secret-32-bytes!!!!!
   allowed-card-schemes:
     - MC
     - VISA
@@ -41,6 +41,11 @@ rotation:
     cron: "-"
     size: 10
     emergency-size: 5
+  hmac-batch:
+    cron: "-"
+    size: 10
+    parallelism: 2
+    max-batches-per-run: 0
   compliance:
     max-key-age-days: 365
 

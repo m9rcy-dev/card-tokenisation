@@ -391,7 +391,7 @@ Service Layer
 Crypto Layer
   AesGcmCipher             → AES-256-GCM encrypt / decrypt / wrap DEK
   PanHasher                → HMAC-SHA256 PAN fingerprint (dedup)
-  InMemoryKeyRing          → versioned in-memory KEK store
+  InMemoryKekKeyRing          → versioned in-memory KEK store
   TamperDetector           → HMAC-SHA256 row integrity check
 
 KMS Layer

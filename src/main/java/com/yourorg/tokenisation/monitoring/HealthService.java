@@ -1,7 +1,7 @@
 package com.yourorg.tokenisation.monitoring;
 
 import com.yourorg.tokenisation.api.response.HealthResponse;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,7 +35,7 @@ public class HealthService {
 
     private final JdbcTemplate jdbcTemplate;
     private final KeyVersionRepository keyVersionRepository;
-    private final InMemoryKeyRing keyRing;
+    private final InMemoryKekKeyRing keyRing;
 
     /**
      * Constructs the health service with its required dependencies.
@@ -46,7 +46,7 @@ public class HealthService {
      */
     public HealthService(JdbcTemplate jdbcTemplate,
                          KeyVersionRepository keyVersionRepository,
-                         InMemoryKeyRing keyRing) {
+                         InMemoryKekKeyRing keyRing) {
         this.jdbcTemplate = jdbcTemplate;
         this.keyVersionRepository = keyVersionRepository;
         this.keyRing = keyRing;

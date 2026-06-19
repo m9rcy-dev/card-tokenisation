@@ -16,12 +16,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for {@link InMemoryKeyRing}.
+ * Unit tests for {@link InMemoryKekKeyRing}.
  *
  * <p>No Spring context. Tests cover: load, promote, get-by-version, retire,
  * mark-compromised, and concurrent load correctness.
  */
-class InMemoryKeyRingTest {
+class InMemoryKekKeyRingTest {
 
     private static final String KEY_VERSION_1 = "version-1-uuid";
     private static final String KEY_VERSION_2 = "version-2-uuid";
@@ -32,11 +32,11 @@ class InMemoryKeyRingTest {
         Arrays.fill(VALID_KEK, (byte) 0xAA);
     }
 
-    private InMemoryKeyRing keyRing;
+    private InMemoryKekKeyRing keyRing;
 
     @BeforeEach
     void setUp() {
-        keyRing = new InMemoryKeyRing();
+        keyRing = new InMemoryKekKeyRing();
     }
 
     // ── load ─────────────────────────────────────────────────────────────────

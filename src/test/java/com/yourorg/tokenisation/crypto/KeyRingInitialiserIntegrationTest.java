@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>{@link KeyRingInitialiser} is mocked out of the Spring context (via {@link MockBean})
  * to prevent it from auto-running during context startup. Each test seeds the
  * {@code key_versions} table, then constructs and invokes the real initialiser manually.
- * The Spring-managed {@link InMemoryKeyRing} bean is used as the assertion target
+ * The Spring-managed {@link InMemoryKekKeyRing} bean is used as the assertion target
  * so that we verify the same ring that production code would use.
  *
  * <p>Uses a real PostgreSQL container via {@link AbstractIntegrationTest}.
@@ -51,7 +51,13 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     private KeyVersionRepository keyVersionRepository;
 
     @Autowired
-    private InMemoryKeyRing keyRing;
+    private InMemoryKekKeyRing keyRing;
+
+    @Autowired
+    private InMemoryHmacKeyRing hmacKeyRing;
+
+    @Autowired
+    private AesGcmCipher cipher;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -72,18 +78,18 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
         jdbcTemplate.execute("DELETE FROM key_versions");
         jdbcTemplate.update("""
                 INSERT INTO key_versions (id, kms_key_id, kms_provider, key_alias, encrypted_kek_blob,
-                    status, activated_at, rotate_by, created_by, checksum)
-                VALUES (?::uuid, ?, ?, ?, ?, ?, now(), ?, ?, ?)
+                    key_type, status, activated_at, rotate_by, created_by)
+                VALUES (?::uuid, ?, ?, ?, ?, ?, ?, now(), ?, ?)
                 """,
                 SEED_KEY_VERSION_ID,
                 "local-dev-key",
                 "LOCAL_DEV",
                 "integration-test-seed-key",
                 "ignored",
+                "KEK",
                 "ACTIVE",
                 Timestamp.from(Instant.now().plusSeconds(365L * 24 * 60 * 60)),
-                "test-seeder",
-                "seed-checksum"
+                "test-seeder"
         );
     }
 
@@ -150,7 +156,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
         // We verify the translated exception type and the preserved root message.
         assertThatThrownBy(() -> initialiserUnderTest.run(null))
                 .isInstanceOf(InvalidDataAccessApiUsageException.class)
-                .hasMessageContaining("ACTIVE key version");
+                .hasMessageContaining("ACTIVE KEK version");
     }
 
     /**
@@ -162,7 +168,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
      * @return a configured but not yet executed initialiser
      */
     private KeyRingInitialiser buildInitialiser() {
-        return new KeyRingInitialiser(kmsProvider, keyVersionRepository, keyRing);
+        return new KeyRingInitialiser(kmsProvider, keyVersionRepository, keyRing, hmacKeyRing, cipher);
     }
 
     /**
@@ -181,18 +187,18 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
         Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 60 * 60));
         jdbcTemplate.update("""
                 INSERT INTO key_versions (id, kms_key_id, kms_provider, key_alias, encrypted_kek_blob,
-                    status, activated_at, rotate_by, created_by, checksum)
-                VALUES (?::uuid, ?, ?, ?, ?, ?, now(), ?, ?, ?)
+                    key_type, status, activated_at, rotate_by, created_by)
+                VALUES (?::uuid, ?, ?, ?, ?, ?, ?, now(), ?, ?)
                 """,
                 versionId,
                 "local-dev-key",
                 "LOCAL_DEV",
                 keyAlias,
                 "ignored",
+                "KEK",
                 status.name(),
                 rotateBy,
-                "integration-test",
-                "placeholder-checksum"
+                "integration-test"
         );
         return versionId;
     }

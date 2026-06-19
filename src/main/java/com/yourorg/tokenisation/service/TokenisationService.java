@@ -7,7 +7,9 @@ import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.EncryptResult;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
+import com.yourorg.tokenisation.crypto.HashResult;
+import com.yourorg.tokenisation.crypto.InMemoryHmacKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.crypto.PanHasher;
 import com.yourorg.tokenisation.domain.KeyVersion;
@@ -40,7 +42,7 @@ import java.util.UUID;
  *   <li>Compute the PAN hash (HMAC-SHA256) for de-duplication.
  *   <li>Check for an existing active token for the same PAN hash — return it if found
  *       (deterministic: one PAN always maps to one token).
- *   <li>Retrieve the active {@link KeyMaterial} from the {@link InMemoryKeyRing}.
+ *   <li>Retrieve the active {@link KeyMaterial} from the {@link InMemoryKekKeyRing}.
  *   <li>Encrypt the PAN using {@link AesGcmCipher}: generates a fresh DEK,
  *       wraps it with the KEK, encrypts the PAN with the DEK. The DEK is zeroed on exit.
  *   <li>Generate a random UUID token value.
@@ -62,7 +64,8 @@ public class TokenisationService {
 
     private final AesGcmCipher cipher;
     private final PanHasher panHasher;
-    private final InMemoryKeyRing keyRing;
+    private final InMemoryKekKeyRing keyRing;
+    private final InMemoryHmacKeyRing hmacKeyRing;
     private final TokenVaultRepository tokenVaultRepository;
     private final KeyVersionRepository keyVersionRepository;
     private final AuditLogger auditLogger;
@@ -82,7 +85,8 @@ public class TokenisationService {
     public TokenisationService(
             AesGcmCipher cipher,
             PanHasher panHasher,
-            InMemoryKeyRing keyRing,
+            InMemoryKekKeyRing keyRing,
+            InMemoryHmacKeyRing hmacKeyRing,
             TokenVaultRepository tokenVaultRepository,
             KeyVersionRepository keyVersionRepository,
             AuditLogger auditLogger,
@@ -90,6 +94,7 @@ public class TokenisationService {
         this.cipher = cipher;
         this.panHasher = panHasher;
         this.keyRing = keyRing;
+        this.hmacKeyRing = hmacKeyRing;
         this.tokenVaultRepository = tokenVaultRepository;
         this.keyVersionRepository = keyVersionRepository;
         this.auditLogger = auditLogger;
@@ -114,13 +119,24 @@ public class TokenisationService {
         try {
             validatePan(request.getPan());
 
-            String panHash = panHasher.hash(request.getPan());
+            HashResult hashResult = panHasher.hash(request.getPan());
 
-            Optional<TokenVault> existingToken = tokenVaultRepository.findActiveByPanHash(panHash);
+            // Primary lookup with new (current active) HMAC hash
+            Optional<TokenVault> existingToken = tokenVaultRepository.findActiveByPanHash(hashResult.hash());
+
+            // During HMAC rotation, some tokens may still carry the old hash — fall back to it
+            if (existingToken.isEmpty()) {
+                Optional<String> rotatingHmacId = hmacKeyRing.findRotatingVersionId();
+                if (rotatingHmacId.isPresent()) {
+                    String oldHash = panHasher.hashWithVersion(request.getPan(), rotatingHmacId.get());
+                    existingToken = tokenVaultRepository.findActiveByPanHash(oldHash);
+                }
+            }
+
             if (existingToken.isPresent()) {
                 return handleDeduplicated(existingToken.get());
             }
-            return createNewToken(request, panHash);
+            return createNewToken(request, hashResult);
         } catch (TokenisationException tokenisationException) {
             writeFailureAudit(tokenisationException.getMessage());
             throw tokenisationException;
@@ -179,12 +195,12 @@ public class TokenisationService {
 
         validatePan(request.getPan());
 
-        String newPanHash = panHasher.hash(request.getPan());
+        HashResult newHashResult = panHasher.hash(request.getPan());
 
         TokenVault vault = tokenVaultRepository.findActiveByToken(token)
                 .orElseThrow(() -> new TokenNotFoundException(token));
 
-        tokenVaultRepository.findActiveByPanHash(newPanHash).ifPresent(existing -> {
+        tokenVaultRepository.findActiveByPanHash(newHashResult.hash()).ifPresent(existing -> {
             if (!existing.getToken().equals(vault.getToken())) {
                 throw new CardAlreadyTokenisedException(
                         "The new PAN already has an active token in the vault");
@@ -209,12 +225,13 @@ public class TokenisationService {
                         encryptResult.authTag(),
                         encryptResult.encryptedDek(),
                         activeKeyVersion,
-                        newPanHash,
+                        newHashResult.hash(),
                         newLastFour,
                         request.getCardScheme(),
                         request.getExpiryMonth() != null ? request.getExpiryMonth().shortValue() : null,
                         request.getExpiryYear() != null ? request.getExpiryYear().shortValue() : null,
                         newExpiresAt);
+                vault.updatePanHash(newHashResult.hash(), UUID.fromString(newHashResult.hmacVersionId()));
 
                 tokenVaultRepository.save(vault);
 
@@ -252,11 +269,11 @@ public class TokenisationService {
     /**
      * Creates a new token vault record and persists it.
      *
-     * @param request the tokenisation request
-     * @param panHash the HMAC-SHA256 of the PAN
+     * @param request    the tokenisation request
+     * @param hashResult the PAN hash and HMAC version ID from {@link PanHasher#hash}
      * @return the newly created token response
      */
-    private TokeniseResponse createNewToken(TokeniseRequest request, String panHash) {
+    private TokeniseResponse createNewToken(TokeniseRequest request, HashResult hashResult) {
         KeyMaterial activeKeyMaterial = keyRing.getActive();
         KeyVersion activeKeyVersion = keyVersionRepository.findActiveOrThrow();
 
@@ -265,7 +282,7 @@ public class TokenisationService {
         try {
             EncryptResult encryptResult = cipher.encrypt(panBytes, kek);
 
-            TokenVault newVault = buildVaultRecord(request, panHash, encryptResult, activeKeyVersion);
+            TokenVault newVault = buildVaultRecord(request, hashResult, encryptResult, activeKeyVersion);
             tokenVaultRepository.save(newVault);
 
             log.debug("Created new token");
@@ -282,13 +299,13 @@ public class TokenisationService {
      * Builds a {@link TokenVault} entity from the encryption result and request metadata.
      *
      * @param request          the tokenisation request
-     * @param panHash          the HMAC-SHA256 of the PAN
+     * @param hashResult       the PAN hash and HMAC version ID
      * @param encryptResult    the AES-GCM encryption output
      * @param activeKeyVersion the key version whose KEK wrapped the DEK
      * @return a fully populated, unsaved vault record
      */
     private TokenVault buildVaultRecord(TokeniseRequest request,
-                                        String panHash,
+                                        HashResult hashResult,
                                         EncryptResult encryptResult,
                                         KeyVersion activeKeyVersion) {
         Instant now = Instant.now();
@@ -301,7 +318,8 @@ public class TokenisationService {
                 .authTag(encryptResult.authTag())
                 .encryptedDek(encryptResult.encryptedDek())
                 .keyVersion(activeKeyVersion)
-                .panHash(panHash)
+                .panHash(hashResult.hash())
+                .hmacKeyVersionId(UUID.fromString(hashResult.hmacVersionId()))
                 .lastFour(lastFour)
                 .cardScheme(request.getCardScheme())
                 .expiryMonth(request.getExpiryMonth() != null

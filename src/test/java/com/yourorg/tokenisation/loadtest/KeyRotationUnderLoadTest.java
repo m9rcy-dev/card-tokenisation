@@ -4,8 +4,7 @@ import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
 import com.yourorg.tokenisation.config.RotationProperties;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
-import com.yourorg.tokenisation.crypto.TamperDetector;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.RotationReason;
 import com.yourorg.tokenisation.kms.KmsProvider;
@@ -61,9 +60,8 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
     @Autowired private KeyRotationService keyRotationService;
     @Autowired private RotationJob rotationJob;
     @Autowired private RotationProperties rotationProperties;
-    @Autowired private InMemoryKeyRing keyRing;
+    @Autowired private InMemoryKekKeyRing keyRing;
     @Autowired private KmsProvider kmsProvider;
-    @Autowired private TamperDetector tamperDetector;
     @Autowired private BulkTokenSeeder bulkSeeder;
 
     /** Token strings for the 10K pre-seeded tokens — populated by {@link #setUpForRotationTest()}. */
@@ -74,18 +72,15 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
         jdbcTemplate.execute("DELETE FROM token_vault");
         jdbcTemplate.execute("DELETE FROM token_audit_log");
 
-        // Retire any keys left by a previous test, reset seed key to ACTIVE
+        // Retire any KEK versions left by a previous test, reset seed key to ACTIVE.
+        // Scoped to key_type='KEK' so HMAC rows are untouched.
         jdbcTemplate.execute(
-                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid");
+                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid AND key_type = 'KEK'");
         jdbcTemplate.execute(
                 "UPDATE key_versions SET status = 'ACTIVE' WHERE id = '" + SEED_KEY_VERSION_ID + "'::uuid");
 
-        // Recompute real HMAC checksum for seed key (inserted with placeholder "seed-checksum")
-        KeyVersion seedKey = keyVersionRepository.findActiveOrThrow();
-        seedKey.initializeChecksum(tamperDetector.computeChecksum(seedKey));
-        keyVersionRepository.save(seedKey);
-
         // Reload seed key into ring and re-promote it
+        KeyVersion seedKey = keyVersionRepository.findActiveKekOrThrow();
         byte[] seedKek = kmsProvider.unwrapKek(seedKey.getEncryptedKekBlob());
         try {
             keyRing.load(SEED_KEY_VERSION_ID, seedKek, seedKey.getRotateBy());
@@ -139,16 +134,16 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
         // Let traffic run for 3s to establish baseline
         sleep(3_000);
         long baselineRps = baselineCompleted.get() / 3;
-        long beforeRotation = baselineCompleted.get();
 
-        // Initiate rotation — processRotationBatch now drains all batches in one call
+        // Initiate rotation, then start measuring throughput during the batch drain only
         keyRotationService.initiateScheduledRotation("load-test-key-v2", RotationReason.SCHEDULED);
+        long beforeBatch = baselineCompleted.get();          // snapshot after initiate, before batch
         long rotationStart = System.currentTimeMillis();
-        rotationJob.processRotationBatch(); // drains all batches + triggers cutover
-        long rotationDurationSecs = Math.max(1, (System.currentTimeMillis() - rotationStart) / 1_000);
+        rotationJob.processRotationBatch();                   // drains all batches + triggers cutover
+        long rotationDurationMs = Math.max(1L, System.currentTimeMillis() - rotationStart);
 
-        long duringRotation = baselineCompleted.get() - beforeRotation;
-        long rotationRps = duringRotation / rotationDurationSecs;
+        long duringRotation = baselineCompleted.get() - beforeBatch;
+        long rotationRps = (duringRotation * 1_000L) / rotationDurationMs;
 
         // Stop background traffic
         stopTraffic.set(true);

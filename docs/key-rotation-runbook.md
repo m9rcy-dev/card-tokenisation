@@ -1,18 +1,19 @@
 # Key Rotation Runbook
 
-This runbook covers both **scheduled** (compliance-driven) and **emergency** (compromise-driven) key rotation. Read the entire relevant section before acting.
+This runbook covers **KEK rotation** (scheduled and emergency) and **HMAC key rotation** for PAN-hash versioning. Read the entire relevant section before acting.
 
 ---
 
 ## Table of Contents
 
 1. [Background — What Rotation Does](#1-background--what-rotation-does)
-2. [Scheduled Rotation](#2-scheduled-rotation)
-3. [Emergency Rotation](#3-emergency-rotation)
-4. [Monitoring Rotation Progress](#4-monitoring-rotation-progress)
-5. [Verifying Completion](#5-verifying-completion)
-6. [Troubleshooting](#6-troubleshooting)
-7. [Rollback Considerations](#7-rollback-considerations)
+2. [Scheduled KEK Rotation](#2-scheduled-kek-rotation)
+3. [Emergency KEK Rotation](#3-emergency-kek-rotation)
+4. [HMAC Key Rotation](#4-hmac-key-rotation)
+5. [Monitoring Rotation Progress](#5-monitoring-rotation-progress)
+6. [Verifying Completion](#6-verifying-completion)
+7. [Troubleshooting](#7-troubleshooting)
+8. [Rollback Considerations](#8-rollback-considerations)
 
 ---
 
@@ -31,7 +32,7 @@ This means rotation is safe to run while the service is live — tokens encrypte
 
 ---
 
-## 2. Scheduled Rotation
+## 2. Scheduled KEK Rotation
 
 Use this procedure when the key approaches its compliance TTL (`rotation.compliance.max-key-age-days`, default 365 days) or when a manual rotation is required.
 
@@ -96,7 +97,7 @@ psql $DATABASE_URL -c "
 
 ---
 
-## 3. Emergency Rotation
+## 3. Emergency KEK Rotation
 
 Use this procedure when a KEK is suspected or confirmed to be compromised. **Act quickly** — every second of delay is a window for an attacker to decrypt vault records.
 
@@ -168,7 +169,78 @@ curl -H "X-Merchant-ID: MERCHANT_001" https://<host>/api/v1/tokens/$TOKEN
 
 ---
 
-## 4. Monitoring Rotation Progress
+## 4. HMAC Key Rotation
+
+HMAC keys sign the `pan_hash` stored in `token_vault`. Rotating them requires re-hashing every active vault record under the new HMAC key. This is the most data-intensive rotation and must be performed off-peak.
+
+### When to rotate the HMAC key
+
+- Annual compliance rotation (same cadence as KEK, default `rotate_by` is 365 days from activation)
+- HMAC secret suspected of leaking
+- Migration from the bootstrap env-var secret to a proper `SecureRandom` key (first rotation after initial deployment)
+
+### Step 1 — Verify pre-rotation HMAC key state
+
+```sql
+SELECT id, key_alias, status, activated_at, rotate_by
+FROM key_versions
+WHERE key_type = 'HMAC'
+ORDER BY activated_at DESC;
+```
+
+Expected: one row with `status = 'ACTIVE'`, `rotate_by` in the past or approaching.
+
+### Step 2 — Trigger HMAC rotation
+
+```bash
+curl -X POST https://<host>/api/v1/admin/hmac-keys/rotate \
+  -H 'Content-Type: application/json' \
+  -d '{"newKeyAlias": "hmac-key-2027-q1"}'
+```
+
+What happens synchronously:
+- The old HMAC key moves from `ACTIVE` → `ROTATING`.
+- A new 32-byte `SecureRandom` HMAC key is generated, encrypted under the active KEK, and persisted as a new `ACTIVE` HMAC row.
+- The new key is loaded into `InMemoryHmacKeyRing` and promoted to active.
+- All new tokenisations immediately use the new key.
+
+### Step 3 — Monitor re-hashing batch
+
+The `HmacRotationJob` re-hashes vault records every night at 02:00 UTC (configurable via `rotation.hmac-batch.cron`).
+
+```sql
+-- Tokens still on the rotating HMAC key
+SELECT COUNT(*)
+FROM token_vault
+WHERE hmac_key_version_id = '<rotating-hmac-uuid>'
+  AND is_active = TRUE;
+```
+
+During re-hashing, `TokenisationService` performs a dual-lookup: it tries the new hash first, then falls back to the old hash for de-duplication. This prevents duplicate tokens during the transition window.
+
+### Step 4 — Confirm completion
+
+```sql
+-- Old HMAC key should be RETIRED
+SELECT id, key_alias, status, retired_at
+FROM key_versions
+WHERE key_type = 'HMAC'
+ORDER BY activated_at DESC;
+
+-- Audit confirmation
+SELECT event_type, outcome, created_at
+FROM token_audit_log
+WHERE event_type IN ('HMAC_ROTATION_STARTED', 'HMAC_ROTATION_COMPLETED')
+ORDER BY created_at DESC LIMIT 4;
+```
+
+### Step 5 — Retire the old env-var secret (first rotation only)
+
+After the first HMAC rotation completes, the `tokenisation.pan-hash-secret` env var is no longer needed. All `pan_hash` values now use the rotated key. Remove `PAN_HASH_SECRET` from your secrets manager and `application.yml` to prevent accidental re-use.
+
+---
+
+## 5. Monitoring Rotation Progress
 
 ### Health endpoint
 
@@ -198,7 +270,7 @@ During rotation, expect `TOKEN_REENCRYPTED` to be the highest-volume event type.
 
 ---
 
-## 5. Verifying Completion
+## 6. Verifying Completion
 
 A rotation is complete when **all** of the following are true:
 
@@ -211,7 +283,7 @@ A rotation is complete when **all** of the following are true:
 
 ---
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 ### Rotation stuck: tokens not migrating
 
@@ -240,20 +312,21 @@ If `RotationBatchProcessor.self` is null (misconfigured Spring context), no toke
 
 **Fix:** Restart the application. `KeyRingInitialiser` reloads all `ACTIVE` and `ROTATING` key versions from DB. If the old key is `RETIRED`, it is not loaded. The new key is loaded and promoted.
 
-### Integrity check failure during cutover
+### Unexpected HMAC decryption failure at startup
 
-**Symptom:** Log line: `Integrity check failed on retiring key [<uuid>]`
+**Symptom:** Log line: `AES-GCM auth tag mismatch` during `KeyRingInitialiser` Phase 2 (HMAC ring load).
 
-**Cause:** The `key_versions` row for the rotating key was modified directly in the database (or the HMAC signing secret changed after the checksum was computed).
+**Cause:** The `encrypted_secret` column in a `key_versions` HMAC row was modified directly in the database. The GCM auth tag embedded in the blob detects the tamper.
 
 **Action:**
-1. Check audit log for `TAMPER_ALERT` events.
-2. If a DB-level modification occurred, treat this as a security incident and initiate an emergency rotation.
-3. If the signing secret (`TAMPER_DETECTION_SECRET`) changed without re-computing checksums, re-compute all checksums using the new secret.
+1. Do not restart repeatedly — each failed startup attempt logs evidence.
+2. Check who modified the row: `SELECT * FROM token_audit_log WHERE event_type LIKE 'HMAC%' ORDER BY created_at DESC LIMIT 10;`
+3. If DB-level tampering is confirmed, treat as a security incident and initiate emergency KEK rotation to limit blast radius while the HMAC row is restored from backup.
+4. Integrity of HMAC key material is enforced by AES-256-GCM authentication tags — there is no checksum column to compare manually.
 
 ---
 
-## 7. Rollback Considerations
+## 8. Rollback Considerations
 
 **Key rotation cannot be rolled back** once tokens have been re-encrypted under the new key. The re-encryption is designed to be one-way.
 

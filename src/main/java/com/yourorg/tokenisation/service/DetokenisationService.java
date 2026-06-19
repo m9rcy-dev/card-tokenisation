@@ -5,7 +5,7 @@ import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.EncryptionException;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.TokenVault;
@@ -31,7 +31,7 @@ import java.util.UUID;
  * <ol>
  *   <li>Look up the active {@link TokenVault} record by token value — 404 if absent or inactive.
  *   <li>Check expiry: if {@code expires_at} is set and in the past, return 404.
- *   <li>Retrieve {@link KeyMaterial} from the {@link InMemoryKeyRing} by the vault's key version ID.
+ *   <li>Retrieve {@link KeyMaterial} from the {@link InMemoryKekKeyRing} by the vault's key version ID.
  *   <li>If key status is {@code COMPROMISED} — write {@code TAMPER_ALERT} audit record,
  *       throw {@link KeyIntegrityException} (caller receives 500).
  *   <li>Copy the KEK bytes and decrypt the PAN via {@link AesGcmCipher#decrypt}.
@@ -53,7 +53,7 @@ import java.util.UUID;
 public class DetokenisationService {
 
     private final AesGcmCipher cipher;
-    private final InMemoryKeyRing keyRing;
+    private final InMemoryKekKeyRing keyRing;
     private final TokenVaultRepository tokenVaultRepository;
     private final AuditLogger auditLogger;
 
@@ -66,7 +66,7 @@ public class DetokenisationService {
      * @param auditLogger          audit event writer; must not be null
      */
     public DetokenisationService(AesGcmCipher cipher,
-                                 InMemoryKeyRing keyRing,
+                                 InMemoryKekKeyRing keyRing,
                                  TokenVaultRepository tokenVaultRepository,
                                  AuditLogger auditLogger) {
         this.cipher = cipher;

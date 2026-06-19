@@ -42,26 +42,36 @@ else
   _CMD_clean         := clean
 endif
 
-# ── Postgres (Docker) ─────────────────────────────────────────────────────────
-POSTGRES_IMAGE     := postgres:16
+# ── Postgres (standalone Docker) ──────────────────────────────────────────────
+POSTGRES_IMAGE     := postgres:16-alpine
 POSTGRES_CONTAINER := card-tokenisation-db
 POSTGRES_PORT      := 5432
 POSTGRES_DB        := tokenisation
 POSTGRES_USER      := tokenisation_app
-POSTGRES_PASSWORD  := change_me
+POSTGRES_PASSWORD  := local-dev-password
 
-# ── App env ───────────────────────────────────────────────────────────────────
-export DATASOURCE_URL          := jdbc:postgresql://localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)
-export DATASOURCE_USER         := $(POSTGRES_USER)
-export DATASOURCE_PASSWORD     := $(POSTGRES_PASSWORD)
-export PAN_HASH_SECRET         := local-dev-pan-hash-secret-32bytes!
-export TAMPER_DETECTION_SECRET := local-dev-tamper-secret-32bytes!
-export KMS_PROVIDER            := local-dev
-export KMS_LOCAL_DEV_KEK_HEX   := 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+# ── App env — local-dev KMS (no AWS, no LocalStack) ──────────────────────────
+export DATASOURCE_URL        := jdbc:postgresql://localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)
+export DATASOURCE_USER       := $(POSTGRES_USER)
+export DATASOURCE_PASSWORD   := $(POSTGRES_PASSWORD)
+# PAN_HASH_SECRET is only needed on first boot to seed the initial HMAC key row.
+# After the first boot the value in key_versions takes over; remove this env var
+# once the first HMAC key rotation completes.
+export PAN_HASH_SECRET       := local-dev-pan-hash-secret-32bytes!
+export KMS_PROVIDER          := local-dev
+export KMS_LOCAL_DEV_KEK_HEX := 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+
+# ── LocalStack KMS settings ───────────────────────────────────────────────────
+LOCALSTACK_ENDPOINT  := http://localhost:4566
+LOCALSTACK_REGION    := ap-southeast-2
+LOCALSTACK_KEY_ALIAS := alias/card-tokenisation-kek
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test load-test results start stop-postgres start-postgres db-migrate clean gradle-wrapper bruno-run bruno-run-admin
+.PHONY: help build test load-test localstack-test results \
+        start stop-postgres start-postgres db-migrate \
+        start-localstack stop-localstack run-localstack \
+        clean gradle-wrapper bruno-run bruno-run-admin gatling-test
 
 ## help: show this message
 help:
@@ -81,11 +91,17 @@ test:
 load-test:
 	$(_BUILD) $(_CMD_load_test)
 
+## localstack-test: run LocalStack KMS integration tests (requires Docker)
+localstack-test:
+	$(MVN) test -P localstack-tests
+
 ## results [SCALE=1k|5k|10k|20k|50k]: print a summary table of load test results
 results:
 	@python3 scripts/print-results.py $(SCALE)
 
-## start-postgres: start a local PostgreSQL container
+# ── Local dev (local-dev KMS — no AWS) ───────────────────────────────────────
+
+## start-postgres: start a standalone local PostgreSQL container
 start-postgres:
 	@if docker ps -q -f name=$(POSTGRES_CONTAINER) | grep -q .; then \
 		echo "postgres already running"; \
@@ -107,7 +123,7 @@ start-postgres:
 		echo "postgres ready"; \
 	fi
 
-## stop-postgres: stop and remove the local PostgreSQL container
+## stop-postgres: stop and remove the standalone PostgreSQL container
 stop-postgres:
 	@if docker ps -q -f name=$(POSTGRES_CONTAINER) | grep -q .; then \
 		docker stop $(POSTGRES_CONTAINER) && docker rm $(POSTGRES_CONTAINER); \
@@ -120,9 +136,51 @@ stop-postgres:
 db-migrate: start-postgres
 	$(_BUILD) $(_CMD_flyway)
 
-## start: start the Spring Boot application (starts postgres first if not running)
+## start: start the Spring Boot app with local-dev KMS (no AWS, starts postgres first)
 start: db-migrate
 	$(_BUILD) $(_CMD_run)
+
+# ── LocalStack KMS (real AWS KMS API via LocalStack) ─────────────────────────
+#
+# Workflow:
+#   1. make start-localstack   — start Postgres + LocalStack; creates KMS key via init hook
+#   2. make run-localstack     — start Spring Boot app pointed at LocalStack KMS
+#   3. make stop-localstack    — tear everything down
+#
+# Prerequisites: docker, awscli (for the key ARN lookup fallback)
+
+## start-localstack: start Postgres + LocalStack KMS and create the KMS key
+start-localstack:
+	docker compose -f docker-compose-localstack.yml up -d
+	@echo "waiting for LocalStack KMS init hook to complete..."
+	@until docker compose -f docker-compose-localstack.yml exec -T localstack \
+		test -f /tmp/localstack/kms-key-arn 2>/dev/null; do \
+		sleep 2; \
+	done
+	@echo "LocalStack KMS ready. Key ARN: $$(docker compose -f docker-compose-localstack.yml exec -T localstack cat /tmp/localstack/kms-key-arn)"
+
+## stop-localstack: stop and remove Postgres + LocalStack containers and volumes
+stop-localstack:
+	docker compose -f docker-compose-localstack.yml down -v
+
+## run-localstack: start Spring Boot app against LocalStack KMS (requires: make start-localstack)
+run-localstack:
+	$(eval _LS_KEY_ARN := $(shell docker compose -f docker-compose-localstack.yml exec -T localstack cat /tmp/localstack/kms-key-arn 2>/dev/null))
+	@[ -n "$(_LS_KEY_ARN)" ] || { echo "ERROR: LocalStack not running or key not created. Run: make start-localstack"; exit 1; }
+	@echo "Starting app with LocalStack KMS key: $(_LS_KEY_ARN)"
+	SPRING_PROFILES_ACTIVE=localstack \
+	KMS_PROVIDER=aws \
+	AWS_REGION=$(LOCALSTACK_REGION) \
+	AWS_KMS_KEY_ARN=$(_LS_KEY_ARN) \
+	KMS_AWS_ENDPOINT_OVERRIDE=$(LOCALSTACK_ENDPOINT) \
+	AWS_ACCESS_KEY_ID=test \
+	AWS_SECRET_ACCESS_KEY=test \
+	DATASOURCE_URL=$(DATASOURCE_URL) \
+	DATASOURCE_USER=$(DATASOURCE_USER) \
+	DATASOURCE_PASSWORD=$(DATASOURCE_PASSWORD) \
+	$(_BUILD) $(_CMD_run)
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
 
 ## clean: remove build artifacts
 clean:
@@ -138,7 +196,7 @@ bruno-run:
 	}
 	cd bruno/card-tokenisation-api && bru run tokens --env local -r
 
-## bruno-run-admin: run admin key rotation smoke tests (requires: make start; set compromisedKeyVersionId in bruno env for emergency rotation)
+## bruno-run-admin: run admin key rotation smoke tests (requires: make start)
 bruno-run-admin:
 	@command -v bru >/dev/null 2>&1 || { \
 		echo "Bruno CLI not found. Install with: npm install -g @usebruno/cli"; exit 1; \
@@ -171,12 +229,10 @@ gradle-wrapper:
 GATLING_BASE_URL  ?= http://localhost:8080
 GATLING_DB_URL    ?= jdbc:postgresql://localhost:5432/tokenisation
 GATLING_DB_USER   ?= tokenisation_app
-GATLING_DB_PASS   ?= change_me
+GATLING_DB_PASS   ?= local-dev-password
 GATLING_SIM       ?= com.yourorg.tokenisation.TokenisationSimulation
 GATLING_SCALE     ?= 20k
 _GATLING_REQUESTS := $(shell echo $(GATLING_SCALE) | sed 's/k/000/; s/m/000000/')
-
-.PHONY: gatling-test
 
 ## gatling-test [GATLING_SCALE=20k|50k|100k|1m] [GATLING_SIM=...]: run Gatling simulation (requires: make start)
 gatling-test:

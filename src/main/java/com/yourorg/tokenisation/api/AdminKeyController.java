@@ -1,8 +1,10 @@
 package com.yourorg.tokenisation.api;
 
+import com.yourorg.tokenisation.api.request.RotateHmacKeyRequest;
 import com.yourorg.tokenisation.api.request.RotateKeyRequest;
 import com.yourorg.tokenisation.api.response.ActiveKeyResponse;
 import com.yourorg.tokenisation.domain.RotationReason;
+import com.yourorg.tokenisation.rotation.HmacRotationService;
 import com.yourorg.tokenisation.rotation.KeyRotationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -49,14 +51,12 @@ import org.springframework.web.server.ResponseStatusException;
 public class AdminKeyController {
 
     private final KeyRotationService keyRotationService;
+    private final HmacRotationService hmacRotationService;
 
-    /**
-     * Constructs the admin key controller.
-     *
-     * @param keyRotationService the rotation orchestrator; must not be null
-     */
-    public AdminKeyController(KeyRotationService keyRotationService) {
+    public AdminKeyController(KeyRotationService keyRotationService,
+                               HmacRotationService hmacRotationService) {
         this.keyRotationService = keyRotationService;
+        this.hmacRotationService = hmacRotationService;
     }
 
     /**
@@ -122,5 +122,29 @@ public class AdminKeyController {
             }
             keyRotationService.initiateScheduledRotation(request.getNewKeyAlias(), request.getReason());
         }
+    }
+
+    /**
+     * Initiates a scheduled HMAC key rotation.
+     *
+     * <p>The current ACTIVE HMAC version transitions to ROTATING and a new ACTIVE version is
+     * created immediately.  Background re-hashing of vault records is driven by
+     * {@code HmacRotationJob} (default schedule: 02:00 UTC daily).
+     *
+     * @param request the rotation request specifying the new key alias
+     */
+    @PostMapping("/hmac-keys/rotate")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    @Operation(summary = "Initiate HMAC key rotation",
+            description = "Rotates the HMAC signing secret used for PAN hash de-duplication. "
+                    + "Vault records are re-hashed in a background batch job. "
+                    + "**Admin access only — must be protected in production.**")
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "HMAC rotation accepted; re-hashing in progress"),
+            @ApiResponse(responseCode = "400", description = "newKeyAlias is missing or blank")
+    })
+    public void rotateHmacKey(@Valid @RequestBody RotateHmacKeyRequest request) {
+        log.warn("HMAC key rotation requested: alias=[{}]", request.getNewKeyAlias());
+        hmacRotationService.initiateRotation(request.getNewKeyAlias());
     }
 }

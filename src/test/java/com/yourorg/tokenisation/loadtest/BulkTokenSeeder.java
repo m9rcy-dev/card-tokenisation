@@ -2,7 +2,7 @@ package com.yourorg.tokenisation.loadtest;
 
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.EncryptResult;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.crypto.PanHasher;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -54,12 +54,12 @@ public class BulkTokenSeeder {
 
     private final JdbcTemplate jdbc;
     private final AesGcmCipher cipher;
-    private final InMemoryKeyRing keyRing;
+    private final InMemoryKekKeyRing keyRing;
     private final PanHasher panHasher;
 
     public BulkTokenSeeder(JdbcTemplate jdbc,
                            AesGcmCipher cipher,
-                           InMemoryKeyRing keyRing,
+                           InMemoryKekKeyRing keyRing,
                            PanHasher panHasher) {
         this.jdbc = jdbc;
         this.cipher = cipher;
@@ -89,7 +89,7 @@ public class BulkTokenSeeder {
                 EncryptResult enc = cipher.encrypt(panBytes, kek);
                 Arrays.fill(panBytes, (byte) 0);
 
-                String panHash = panHasher.hash(pan);
+                String panHash = panHasher.hash(pan).hash();
                 String token = UUID.randomUUID().toString();
                 tokens[i] = token;
 
