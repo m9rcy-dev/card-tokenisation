@@ -60,6 +60,13 @@ export DATASOURCE_PASSWORD   := $(POSTGRES_PASSWORD)
 export PAN_HASH_SECRET       := local-dev-pan-hash-secret-32bytes!
 export KMS_PROVIDER          := local-dev
 export KMS_LOCAL_DEV_KEK_HEX := 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+# HikariCP pool size — must be > rotation.batch.parallelism (8) + 5 headroom = 13 minimum.
+# 60 gives 2× headroom over the ~30 concurrent connections needed at 333 rps with a 90ms
+# average transaction hold time, absorbing a 50ms GC pause without exhaustion.
+export HIKARI_MAX_POOL_SIZE  := 60
+# Virtual threads — allows Tomcat to handle high concurrency without a fixed thread pool.
+# Required for Gatling simulations to avoid platform-thread exhaustion under load.
+export VIRTUAL_THREADS_ENABLED := true
 
 # ── LocalStack KMS settings ───────────────────────────────────────────────────
 LOCALSTACK_ENDPOINT  := http://localhost:4566
@@ -105,19 +112,23 @@ results:
 start-postgres:
 	@if docker ps -q -f name=$(POSTGRES_CONTAINER) | grep -q .; then \
 		echo "postgres already running"; \
-	elif docker ps -aq -f name=$(POSTGRES_CONTAINER) | grep -q .; then \
-		docker start $(POSTGRES_CONTAINER); \
-		echo "waiting for postgres..."; \
-		until docker exec $(POSTGRES_CONTAINER) pg_isready -U $(POSTGRES_USER) -d $(POSTGRES_DB) > /dev/null 2>&1; do sleep 1; done; \
-		echo "postgres ready"; \
 	else \
+		if docker ps -aq -f name=$(POSTGRES_CONTAINER) | grep -q .; then \
+			echo "removing stale postgres container (Postgres flags only apply on create)..."; \
+			docker rm $(POSTGRES_CONTAINER); \
+		fi; \
 		docker run -d \
 			--name $(POSTGRES_CONTAINER) \
 			-e POSTGRES_DB=$(POSTGRES_DB) \
 			-e POSTGRES_USER=$(POSTGRES_USER) \
 			-e POSTGRES_PASSWORD=$(POSTGRES_PASSWORD) \
 			-p $(POSTGRES_PORT):5432 \
-			$(POSTGRES_IMAGE); \
+			--shm-size=256m \
+			$(POSTGRES_IMAGE) postgres \
+			  -c max_connections=200 \
+			  -c synchronous_commit=off \
+			  -c fsync=off \
+			  -c full_page_writes=off; \
 		echo "waiting for postgres..."; \
 		until docker exec $(POSTGRES_CONTAINER) pg_isready -U $(POSTGRES_USER) -d $(POSTGRES_DB) > /dev/null 2>&1; do sleep 1; done; \
 		echo "postgres ready"; \
@@ -127,7 +138,10 @@ start-postgres:
 stop-postgres:
 	@if docker ps -q -f name=$(POSTGRES_CONTAINER) | grep -q .; then \
 		docker stop $(POSTGRES_CONTAINER) && docker rm $(POSTGRES_CONTAINER); \
-		echo "postgres stopped"; \
+		echo "postgres stopped and removed"; \
+	elif docker ps -aq -f name=$(POSTGRES_CONTAINER) | grep -q .; then \
+		docker rm $(POSTGRES_CONTAINER); \
+		echo "postgres container removed (was already stopped)"; \
 	else \
 		echo "postgres not running"; \
 	fi
@@ -138,6 +152,7 @@ db-migrate: start-postgres
 
 ## start: start the Spring Boot app with local-dev KMS (no AWS, starts postgres first)
 start: db-migrate
+	MAVEN_OPTS="-XX:MaxGCPauseMillis=50 -Djava.security.egd=file:/dev/./urandom" \
 	$(_BUILD) $(_CMD_run)
 
 # ── LocalStack KMS (real AWS KMS API via LocalStack) ─────────────────────────
@@ -213,33 +228,49 @@ gradle-wrapper:
 
 # ── Gatling simulation targets ────────────────────────────────────────────────
 # Gatling simulations run against a *running* application instance (make start first).
-# They are NOT Spring Boot tests and do not use Testcontainers.
+# They are NOT Spring Boot tests — no Testcontainers, no embedded DB.
 #
-# Usage:
-#   make gatling-test                                  # 20k tokenisation (default)
-#   make gatling-test GATLING_SCALE=50k               # 50k tokenisation
-#   make gatling-test GATLING_SCALE=100k              # 100k tokenisation
-#   make gatling-test GATLING_SCALE=1m                # 1M tokenisation
-#   make gatling-test GATLING_SIM=...DetokenisationSimulation GATLING_SCALE=50k
-#   make gatling-test GATLING_SIM=...RotationSimulation GATLING_SCALE=20k
+# Simulations:
+#   MixedSimulation          — 70% tokenise / 30% detokenise  ← DEFAULT (production traffic pattern)
+#   TokenisationSimulation   — pure tokenise write load
+#   DetokenisationSimulation — pure detokenise read load (seeds 10k tokens first)
+#   RotationSimulation       — mixed traffic while KEK rotation runs concurrently
+#                              (requires a FRESH app start: make start before this)
 #
-# Override target host: GATLING_BASE_URL=http://host:8080 make gatling-test
-# Override DB connection: GATLING_DB_URL=... GATLING_DB_USER=... GATLING_DB_PASS=...
+# Scale:
+#   GATLING_SCALE    — total requests (default: 20k). Accepted: 20k, 50k, 100k, 1m
+#   GATLING_DURATION — sustain window in seconds (default: 120).
+#                      Increase to spread the same SCALE over a longer period (lower RPS):
+#                      SCALE=100k DURATION=300 → 333 rps instead of 833 rps
+#
+# Examples:
+#   make gatling-test                                           # 20k mixed (default)
+#   make gatling-test GATLING_SCALE=100k                       # 100k mixed, 833 rps
+#   make gatling-test GATLING_SCALE=100k GATLING_DURATION=300  # 100k mixed, 333 rps
+#   make gatling-test GATLING_SIM=TokenisationSimulation GATLING_SCALE=50k
+#   make gatling-test GATLING_SIM=DetokenisationSimulation GATLING_SCALE=50k
+#   make gatling-test GATLING_SIM=RotationSimulation GATLING_SCALE=20k   # fresh start required
+#
+# Override target host:  GATLING_BASE_URL=http://host:8080 make gatling-test
+# Override DB creds:     GATLING_DB_URL=... GATLING_DB_USER=... GATLING_DB_PASS=...
 
+_PKG              := com.yourorg.tokenisation
 GATLING_BASE_URL  ?= http://localhost:8080
 GATLING_DB_URL    ?= jdbc:postgresql://localhost:5432/tokenisation
 GATLING_DB_USER   ?= tokenisation_app
 GATLING_DB_PASS   ?= local-dev-password
-GATLING_SIM       ?= com.yourorg.tokenisation.TokenisationSimulation
+GATLING_SIM       ?= $(_PKG).MixedSimulation
 GATLING_SCALE     ?= 20k
-_GATLING_REQUESTS := $(shell echo $(GATLING_SCALE) | sed 's/k/000/; s/m/000000/')
+GATLING_DURATION  ?= 120
+_GATLING_REQUESTS := $(shell echo $(GATLING_SCALE) | sed 's/k/000/g; s/m/000000/g')
 
-## gatling-test [GATLING_SCALE=20k|50k|100k|1m] [GATLING_SIM=...]: run Gatling simulation (requires: make start)
+## gatling-test [GATLING_SCALE=20k|50k|100k|1m] [GATLING_DURATION=120] [GATLING_SIM=...Simulation]: run Gatling simulation (requires: make start)
 gatling-test:
 	$(MVN) gatling:test -P gatling-tests \
 	  -Dgatling.simulationClass=$(GATLING_SIM) \
 	  -DbaseUrl=$(GATLING_BASE_URL) \
 	  -DtotalRequests=$(_GATLING_REQUESTS) \
+	  -DsustainSeconds=$(GATLING_DURATION) \
 	  -DdbUrl=$(GATLING_DB_URL) \
 	  -DdbUser=$(GATLING_DB_USER) \
 	  -DdbPass=$(GATLING_DB_PASS)

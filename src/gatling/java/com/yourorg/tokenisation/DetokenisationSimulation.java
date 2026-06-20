@@ -7,6 +7,10 @@ import io.gatling.javaapi.http.HttpProtocolBuilder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static io.gatling.javaapi.core.CoreDsl.*;
 import static io.gatling.javaapi.http.HttpDsl.*;
@@ -15,33 +19,34 @@ import static io.gatling.javaapi.http.HttpDsl.*;
  * Gatling simulation for the detokenisation endpoint ({@code GET /api/v1/tokens/{token}}).
  *
  * <h3>Setup phase</h3>
- * The {@link #before()} hook seeds the database with {@link #SEED_COUNT} tokens via
- * HTTP tokenisation requests (sequential, not measured), then stores the resulting token
- * strings in a shared circular feed. The main simulation draws tokens from this feed so
- * every detokenisation request targets a real, valid token.
+ * The {@link #before()} hook seeds the database with up to {@link #SEED_COUNT} tokens via
+ * HTTP tokenisation requests (sequential, not measured). The main simulation picks tokens
+ * at random from the seeded pool — each token may be hit multiple times at large scales,
+ * which exercises the hot-path (no per-request DB write) realistically.
  *
- * <h3>Scales (drive via {@code -DtotalRequests=N})</h3>
- * Same as {@link TokenisationSimulation} — 20K, 50K, 100K, 1M.
+ * <h3>How to run</h3>
+ * <pre>
+ *   make start
+ *   make gatling-test GATLING_SIM=DetokenisationSimulation GATLING_SCALE=20k
+ *   make gatling-test GATLING_SIM=DetokenisationSimulation GATLING_SCALE=100k GATLING_DURATION=300
+ * </pre>
  *
  * <p>The simulation asserts p99 ≤ 2000ms and ≥ 99% success rate.
  */
 public class DetokenisationSimulation extends Simulation {
 
-    /**
-     * Number of tokens to pre-seed before the simulation starts.
-     * Round-robin selection means each token is detokenised multiple times for large scales —
-     * this exercises the cache-warm detokenisation path realistically.
-     */
-    private static final int SEED_COUNT = Math.min(SimulationConfig.TOTAL_REQUESTS, 10_000);
+    private static final int SEED_COUNT = 10_000;
 
-    private final List<String> seedTokens = Collections.synchronizedList(new ArrayList<>(SEED_COUNT));
+    private final List<String> seededTokens = Collections.synchronizedList(new ArrayList<>(SEED_COUNT));
 
     private final HttpProtocolBuilder protocol = http
             .baseUrl(SimulationConfig.BASE_URL)
             .acceptHeader("application/json");
 
+    // Token is chosen at runtime (inside exec lambda) so it is read from seededTokens
+    // AFTER before() has populated the list — not at class-init time.
     private final ScenarioBuilder detokenise = scenario("Detokenise GET /api/v1/tokens/{token}")
-            .feed(listFeeder(buildFeed()).circular())
+            .exec(session -> session.set("token", randomToken()))
             .exec(http("GET /api/v1/tokens/{token}")
                     .get(session -> "/api/v1/tokens/" + session.getString("token"))
                     .check(status().is(200))
@@ -52,11 +57,8 @@ public class DetokenisationSimulation extends Simulation {
 
         setUp(
                 detokenise.injectOpen(
-                        rampUsers(SimulationConfig.MAX_USERS).during(SimulationConfig.RAMP_SECONDS),
-                        constantUsersPerSec(SimulationConfig.MAX_USERS).during(SimulationConfig.SUSTAIN_SECONDS)
-                ).throttle(
-                        reachRps(targetRps).in(SimulationConfig.RAMP_SECONDS),
-                        holdFor(SimulationConfig.SUSTAIN_SECONDS)
+                        rampUsersPerSec(1).to(targetRps).during(SimulationConfig.RAMP_SECONDS),
+                        constantUsersPerSec(targetRps).during(SimulationConfig.SUSTAIN_SECONDS)
                 )
         ).protocols(protocol)
                 .assertions(
@@ -69,48 +71,53 @@ public class DetokenisationSimulation extends Simulation {
     public void before() {
         System.out.printf("[DetokenisationSimulation] Clearing DB and seeding %d tokens...%n", SEED_COUNT);
         DbSetupHelper.truncate();
-        seedTokens(SEED_COUNT);
+        seedTokensViaHttp(SEED_COUNT);
         System.out.printf("[DetokenisationSimulation] Seeded %d tokens. Starting simulation " +
-                "(totalRequests=%d).%n", seedTokens.size(), SimulationConfig.TOTAL_REQUESTS);
+                "(totalRequests=%d, targetRps=%d).%n",
+                seededTokens.size(), SimulationConfig.TOTAL_REQUESTS,
+                Math.max(1, SimulationConfig.TOTAL_REQUESTS / SimulationConfig.SUSTAIN_SECONDS));
     }
 
-    private void seedTokens(int count) {
-        // Sequential seeding via HTTP — not measured, just prepares the dataset
+    private String randomToken() {
+        if (seededTokens.isEmpty()) return "no-token-seeded";
+        return seededTokens.get(ThreadLocalRandom.current().nextInt(seededTokens.size()));
+    }
+
+    private void seedTokensViaHttp(int count) {
         java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+        ExecutorService exec = Executors.newFixedThreadPool(20);
+        List<Callable<Void>> tasks = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            try {
-                String pan = TokenisationSimulation.generateVisa16();
-                String body = String.format("""
-                        {"pan":"%s","cardScheme":"MC","expiryMonth":12,"expiryYear":2029}""",
-                        pan);
-
-                var request = java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(SimulationConfig.BASE_URL + "/api/v1/tokens"))
-                        .header("Content-Type", "application/json")
-                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
-                        .build();
-
-                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
-                if (response.statusCode() == 201) {
-                    // Extract token from JSON (avoid pulling in a JSON library dependency)
-                    String token = extractToken(response.body());
-                    if (token != null) seedTokens.add(token);
+            tasks.add(() -> {
+                try {
+                    String pan = TokenisationSimulation.generateVisa16();
+                    String body = String.format(
+                            "{\"pan\":\"%s\",\"cardScheme\":\"MC\",\"expiryMonth\":12,\"expiryYear\":2029}", pan);
+                    var req = java.net.http.HttpRequest.newBuilder()
+                            .uri(java.net.URI.create(SimulationConfig.BASE_URL + "/api/v1/tokens"))
+                            .header("Content-Type", "application/json")
+                            .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+                            .build();
+                    var resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+                    if (resp.statusCode() == 201) {
+                        String token = extractToken(resp.body());
+                        if (token != null) seededTokens.add(token);
+                    }
+                } catch (Exception e) {
+                    System.err.println("[DetokenisationSimulation] Seed error: " + e.getMessage());
                 }
-            } catch (Exception e) {
-                System.err.println("[DetokenisationSimulation] Seed error at slot " + i + ": " + e.getMessage());
-            }
+                return null;
+            });
+        }
+        try {
+            exec.invokeAll(tasks);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            exec.shutdown();
         }
     }
 
-    private List<java.util.Map<String, Object>> buildFeed() {
-        List<java.util.Map<String, Object>> feed = new ArrayList<>(seedTokens.size());
-        for (String t : seedTokens) {
-            feed.add(java.util.Map.of("token", t));
-        }
-        return feed;
-    }
-
-    /** Extracts the {@code token} field from a JSON response without a JSON library. */
     private static String extractToken(String json) {
         int idx = json.indexOf("\"token\":\"");
         if (idx < 0) return null;

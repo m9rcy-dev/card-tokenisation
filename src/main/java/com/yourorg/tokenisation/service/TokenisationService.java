@@ -209,7 +209,11 @@ public class TokenisationService {
 
         try {
             KeyMaterial activeKeyMaterial = keyRing.getActive();
-            KeyVersion activeKeyVersion = keyVersionRepository.findActiveOrThrow();
+            // Resolve entity by ring's own ID to keep kek bytes and key_version_id consistent.
+            KeyVersion activeKeyVersion = keyVersionRepository.findById(
+                    UUID.fromString(activeKeyMaterial.keyVersionId()))
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Active key version from ring not found in DB: " + activeKeyMaterial.keyVersionId()));
 
             byte[] kek = activeKeyMaterial.copyKek();
             byte[] panBytes = request.getPan().getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -275,7 +279,13 @@ public class TokenisationService {
      */
     private TokeniseResponse createNewToken(TokeniseRequest request, HashResult hashResult) {
         KeyMaterial activeKeyMaterial = keyRing.getActive();
-        KeyVersion activeKeyVersion = keyVersionRepository.findActiveOrThrow();
+        // Resolve the KeyVersion entity by the ring's own version ID so that the kek bytes
+        // and the stored key_version_id are always from the same ring snapshot — avoids a
+        // race window where the ring is promoted but the rotation transaction hasn't committed.
+        KeyVersion activeKeyVersion = keyVersionRepository.findById(
+                UUID.fromString(activeKeyMaterial.keyVersionId()))
+                .orElseThrow(() -> new IllegalStateException(
+                        "Active key version from ring not found in DB: " + activeKeyMaterial.keyVersionId()));
 
         byte[] kek = activeKeyMaterial.copyKek();
         byte[] panBytes = request.getPan().getBytes(StandardCharsets.UTF_8);

@@ -40,6 +40,22 @@ public interface KmsProvider {
     byte[] unwrapKek(String encryptedKekBlob);
 
     /**
+     * Encrypts a freshly generated KEK under the KMS master key and returns the blob for storage.
+     *
+     * <p>Used exclusively by {@code KeyRotationService} when initiating a scheduled or emergency
+     * rotation to persist genuinely new key material. The returned string is stored verbatim in
+     * {@code key_versions.encrypted_kek_blob} and can later be reversed by {@link #unwrapKek}.
+     *
+     * <p>Callers must zero {@code plaintextKek} immediately after this method returns.
+     *
+     * @param plaintextKek the raw 32-byte KEK to protect; must not be null; must be exactly 32 bytes
+     * @return the KMS-encrypted KEK blob, Base64-encoded, safe for storage as TEXT
+     * @throws IllegalArgumentException if {@code plaintextKek} is not 32 bytes
+     * @throws KmsOperationException    if the KMS call fails
+     */
+    String wrapNewKek(byte[] plaintextKek);
+
+    /**
      * Wraps a locally generated DEK under the current KEK and returns the encrypted blob for storage.
      *
      * <p>This method is used during rotation to re-wrap an existing DEK under a new KEK.
@@ -71,7 +87,7 @@ public interface KmsProvider {
     /**
      * Retrieves metadata for a KMS key by its internal identifier.
      *
-     * <p>Used by the tamper reconciliation job to validate that the local
+     * <p>Used for operational health checks to validate that the local
      * {@code key_versions} record is consistent with the KMS source of truth.
      *
      * @param kmsKeyId the KMS-internal key identifier (e.g. AWS KMS key ARN); must not be null

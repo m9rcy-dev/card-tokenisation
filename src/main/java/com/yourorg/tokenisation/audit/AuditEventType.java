@@ -64,8 +64,8 @@ public enum AuditEventType {
     EMERGENCY_ROTATION_STARTED,
 
     /**
-     * An HMAC integrity check on a {@code key_versions} row failed — the row was modified
-     * outside the application (database-level tamper detected).
+     * A key version record in {@code key_versions} failed an integrity check — the row
+     * was modified outside the application (e.g. direct database edit of an encrypted field).
      */
     KEY_INTEGRITY_VIOLATION,
 

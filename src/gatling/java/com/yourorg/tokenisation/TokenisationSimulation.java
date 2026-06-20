@@ -12,25 +12,19 @@ import static io.gatling.javaapi.http.HttpDsl.*;
 /**
  * Gatling simulation for the tokenisation endpoint ({@code POST /api/v1/tokens}).
  *
- * <h3>Scales (drive via {@code -DtotalRequests=N})</h3>
- * <ul>
- *   <li>20K  → {@code mvn gatling:test -P gatling-tests -DtotalRequests=20000}
- *   <li>50K  → {@code -DtotalRequests=50000}
- *   <li>100K → {@code -DtotalRequests=100000}
- *   <li>1M   → {@code -DtotalRequests=1000000}
- * </ul>
- *
- * <h3>Prerequisites</h3>
- * <ol>
- *   <li>Application is running: {@code make start}
- *   <li>Database is reachable at {@code dbUrl} (defaults to localhost:5432/tokenisation)
- *   <li>Seed key is loaded in the application's key ring
- * </ol>
+ * <h3>How to run</h3>
+ * <pre>
+ *   make start                                          # start the app first
+ *   make gatling-test GATLING_SIM=TokenisationSimulation GATLING_SCALE=20k
+ *   make gatling-test GATLING_SIM=TokenisationSimulation GATLING_SCALE=100k
+ *   # Spread 100k over 5 minutes to reduce RPS from 833 to 333:
+ *   make gatling-test GATLING_SIM=TokenisationSimulation GATLING_SCALE=100k GATLING_DURATION=300
+ * </pre>
  *
  * <h3>What this simulation measures</h3>
  * <ul>
- *   <li>Throughput (requests/second) at the configured user count
- *   <li>Response time percentiles (p50, p75, p95, p99) from Gatling HTML report
+ *   <li>Pure write throughput — every request is a unique PAN, no dedup path hit
+ *   <li>Throughput (rps) and response time percentiles (p50, p75, p95, p99)
  *   <li>Error rate (non-201 responses)
  * </ul>
  *
@@ -56,17 +50,14 @@ public class TokenisationSimulation extends Simulation {
                     .check(jsonPath("$.token").saveAs("createdToken")));
 
     {
-        // Target: TOTAL_REQUESTS in SUSTAIN_SECONDS at MAX_USERS concurrency.
-        // Ramp up over RAMP_SECONDS before sustaining.
+        // targetRps drives both ramp ceiling and sustained injection rate so that
+        // approximately TOTAL_REQUESTS are fired over SUSTAIN_SECONDS.
         int targetRps = Math.max(1, SimulationConfig.TOTAL_REQUESTS / SimulationConfig.SUSTAIN_SECONDS);
 
         setUp(
                 tokenise.injectOpen(
-                        rampUsers(SimulationConfig.MAX_USERS).during(SimulationConfig.RAMP_SECONDS),
-                        constantUsersPerSec(SimulationConfig.MAX_USERS).during(SimulationConfig.SUSTAIN_SECONDS)
-                ).throttle(
-                        reachRps(targetRps).in(SimulationConfig.RAMP_SECONDS),
-                        holdFor(SimulationConfig.SUSTAIN_SECONDS)
+                        rampUsersPerSec(1).to(targetRps).during(SimulationConfig.RAMP_SECONDS),
+                        constantUsersPerSec(targetRps).during(SimulationConfig.SUSTAIN_SECONDS)
                 )
         ).protocols(protocol)
                 .assertions(
@@ -77,9 +68,10 @@ public class TokenisationSimulation extends Simulation {
 
     @Override
     public void before() {
+        int targetRps = Math.max(1, SimulationConfig.TOTAL_REQUESTS / SimulationConfig.SUSTAIN_SECONDS);
         System.out.printf("[TokenisationSimulation] Clearing database before run " +
-                "(totalRequests=%d, maxUsers=%d)%n",
-                SimulationConfig.TOTAL_REQUESTS, SimulationConfig.MAX_USERS);
+                "(totalRequests=%d, targetRps=%d).%n",
+                SimulationConfig.TOTAL_REQUESTS, targetRps);
         DbSetupHelper.truncate();
     }
 

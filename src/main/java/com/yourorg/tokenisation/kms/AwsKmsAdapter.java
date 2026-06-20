@@ -93,6 +93,36 @@ public class AwsKmsAdapter implements KmsProvider {
     }
 
     /**
+     * Encrypts a freshly generated KEK under the AWS KMS master key.
+     *
+     * <p>Uses the same encryption context as {@link #unwrapKek} ({@code purpose=kek-unwrap})
+     * so that the resulting blob is a valid input to that method.
+     *
+     * @param plaintextKek the raw 32-byte KEK; must not be null; must be exactly 32 bytes
+     * @return Base64-encoded KMS ciphertext of the KEK, safe for storage in {@code key_versions.encrypted_kek_blob}
+     * @throws IllegalArgumentException if {@code plaintextKek} is not 32 bytes
+     * @throws KmsOperationException    if the KMS call fails
+     */
+    @Override
+    public String wrapNewKek(byte[] plaintextKek) {
+        if (plaintextKek == null || plaintextKek.length != 32) {
+            throw new IllegalArgumentException("New KEK must be exactly 32 bytes");
+        }
+        try {
+            EncryptRequest encryptRequest = EncryptRequest.builder()
+                    .keyId(masterKeyArn)
+                    .plaintext(SdkBytes.fromByteArray(plaintextKek))
+                    .encryptionContext(Map.of(ENCRYPTION_CONTEXT_PURPOSE_KEY,
+                            ENCRYPTION_CONTEXT_KEK_UNWRAP_VALUE))
+                    .build();
+            byte[] ciphertext = kmsClient.encrypt(encryptRequest).ciphertextBlob().asByteArray();
+            return Base64.getEncoder().encodeToString(ciphertext);
+        } catch (KmsException kmsException) {
+            throw new KmsOperationException("AWS KMS KEK wrap failed", kmsException);
+        }
+    }
+
+    /**
      * Wraps a locally generated DEK by encrypting it with the master KEK via AWS KMS.
      *
      * <p>Uses {@code kms:Encrypt} with an encryption context binding the wrapped DEK
@@ -152,7 +182,7 @@ public class AwsKmsAdapter implements KmsProvider {
     /**
      * Retrieves key metadata from AWS KMS using {@code kms:DescribeKey}.
      *
-     * <p>Used by the tamper reconciliation job to validate the local {@code key_versions}
+     * <p>Used for operational health checks to validate the local {@code key_versions}
      * record against the KMS source of truth.
      *
      * @param kmsKeyId the KMS key ARN or alias to describe; must not be null

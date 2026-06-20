@@ -94,27 +94,21 @@ No KMS call. No HMAC key from AWS.
 
 ## KEK rotation — step by step
 
-> **What the current implementation actually rotates**
->
-> The new KEK version row copies the same `encrypted_kek_blob` from the old row. When
-> decrypted by KMS, both versions yield the same 32-byte KEK. The rotation changes the
-> **version ID** in `key_versions` and re-wraps every DEK with a fresh IV (new ciphertext,
-> same key material). This satisfies compliance version-tracking requirements.
->
-> For cryptographic key material rotation — genuinely new KEK bytes — you would generate a
-> new 32-byte random KEK, call KMS.Encrypt to create a new blob, and store it as the new
-> version. AWS KMS also offers transparent annual key rotation for the master key itself
-> (`EnableKeyRotation`), which changes the underlying HSM key while keeping the same ARN.
-
 **Trigger:** `POST /api/v1/admin/keys/rotate` or compliance cron.
 
 **Step 1 — Initiate:**
 ```
 DB:   UPDATE key_versions SET status = 'ROTATING' WHERE id = v1
 
-App:  copy encrypted_kek_blob from v1 → new row v2 (same blob, new UUID, status = 'ACTIVE')
-KMS:  decrypt(v2.encrypted_kek_blob) → kek_bytes          ← one KMS call
+App:  new_kek_bytes = SecureRandom.nextBytes(32)           ← genuinely new material
+KMS:  new_blob     = KMS.Encrypt(new_kek_bytes,            ← one KMS call
+                        context = {purpose: "kek-unwrap"})
+      zero(new_kek_bytes)
+
+DB:   INSERT key_versions (encrypted_kek_blob = new_blob, status = 'ACTIVE') → v2
+KMS:  kek_bytes    = KMS.Decrypt(new_blob)                 ← one KMS call
 Ring: load(v2, kek_bytes); promoteActive(v2)
+      zero(kek_bytes)
 
 Audit: KEY_ROTATION_STARTED
 ```
@@ -153,7 +147,7 @@ Audit: KEY_ROTATION_COMPLETED
 
 ## HMAC rotation — step by step
 
-Unlike KEK rotation, HMAC rotation **does generate new cryptographic material**.
+Like KEK rotation, HMAC rotation **generates genuinely new cryptographic material**.
 
 **Why HMAC needs rotation:** The HMAC secret is used to compute `pan_hash` for deduplication.
 Rotating it requires re-hashing every PAN in the vault — the one batch that decrypts PAN
@@ -203,10 +197,11 @@ if not found:
 SELECT * FROM token_vault WHERE hmac_key_version_id = h1 AND is_active = TRUE LIMIT 100
 
 For each token:
-  kek_bytes  = ring.getByVersion(token.key_version_id).copyKek()
-  pan_bytes  = AesGcmCipher.decrypt(encrypted_pan, iv, auth_tag, encrypted_dek, kek_bytes)
-  new_hash   = HMAC-SHA256(pan_bytes, hmacRing.getActiveSecret())
-  zero(kek_bytes, pan_bytes)
+  kek_bytes    = ring.getByVersion(token.key_version_id).copyKek()
+  dek_bytes    = AesGcmCipher.unwrapDek(encrypted_dek, kek_bytes)   ← KEK unwraps DEK
+  pan_bytes    = AesGcmCipher.decryptWithDek(encrypted_pan, iv, auth_tag, dek_bytes)
+  new_hash     = HMAC-SHA256(pan_bytes, hmacRing.getActiveSecret())
+  zero(kek_bytes, dek_bytes, pan_bytes)
 
   UPDATE token_vault SET pan_hash = new_hash, hmac_key_version_id = h2 WHERE token_id = X
   Audit: PAN_HASH_RECOMPUTED
@@ -245,7 +240,7 @@ records — it never needs to know how far it got before the restart.
 | App startup (mid-rotation) | 2 — decrypt ACTIVE + ROTATING blobs |
 | Per-token tokenise | 0 |
 | Per-token detokenise | 0 |
-| KEK rotation initiate | 1 — decrypt the new version's blob (same blob, new version UUID) |
+| KEK rotation initiate | 2 — encrypt new KEK bytes (wrapNewKek) + decrypt to load into ring (unwrapKek) |
 | KEK rotation batch (per record) | 0 — in-memory AES-GCM only |
 | HMAC rotation initiate | 0 — new secret encrypted in memory under existing KEK |
 | HMAC rotation batch (per record) | 0 — in-memory AES-GCM + HMAC only |

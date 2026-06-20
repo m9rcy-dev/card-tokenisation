@@ -11,6 +11,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HexFormat;
 
 /**
@@ -56,19 +57,64 @@ public class LocalDevKmsAdapter implements KmsProvider {
     }
 
     /**
-     * Returns the fixed local KEK bytes — no decryption is needed since the KEK
-     * is not actually encrypted in the local-dev profile.
+     * Returns the KEK bytes for the given blob.
      *
-     * <p>The {@code encryptedKekBlob} parameter is ignored in this adapter because
-     * there is no real KMS to unwrap from. The fixed KEK from configuration is returned directly.
+     * <p>Blobs produced by {@link #wrapNewKek} are AES-GCM ciphertexts encrypted under
+     * {@code localKek} and stored as Base64. This method decodes and decrypts them.
      *
-     * @param encryptedKekBlob ignored in this adapter
-     * @return a copy of the configured 32-byte local KEK
+     * <p>Legacy placeholder blobs (e.g. {@code "ignored"}, {@code "local-dev-no-kms-blob"})
+     * cannot be decrypted — they fall back to returning a copy of the configured
+     * {@code localKek} directly. This preserves compatibility with existing seed rows
+     * inserted by {@code LocalDevKeySeeder} and {@code TestDataSeederConfig}.
+     *
+     * @param encryptedKekBlob the blob stored in {@code key_versions.encrypted_kek_blob}
+     * @return the raw 32-byte KEK; the caller must zero this array after use
      */
     @Override
     public byte[] unwrapKek(String encryptedKekBlob) {
-        // A fresh copy is returned so the caller can zero it independently
+        if (encryptedKekBlob != null && !encryptedKekBlob.isBlank()) {
+            try {
+                byte[] decoded = Base64.getDecoder().decode(encryptedKekBlob);
+                // Blobs from wrapNewKek: 12-byte IV + 32-byte ciphertext + 16-byte tag = 60 bytes
+                if (decoded.length > GCM_IV_LENGTH_BYTES + 16) {
+                    return unwrapDekInternal(decoded);
+                }
+            } catch (Exception ignored) {
+                // Not a valid wrapped blob — fall through to legacy behaviour
+            }
+        }
+        // Legacy seed rows use placeholder blobs; return the configured local KEK directly
         return localKek.clone();
+    }
+
+    /**
+     * Encrypts a freshly generated KEK under {@code localKek} using AES-256-GCM.
+     *
+     * <p>The returned Base64 string can be stored in {@code key_versions.encrypted_kek_blob}
+     * and later reversed by {@link #unwrapKek}. This enables true key material rotation
+     * in local-dev and integration-test environments without a real KMS.
+     *
+     * @param plaintextKek the raw 32-byte KEK to protect; must not be null; must be exactly 32 bytes
+     * @return Base64-encoded IV-prefixed AES-GCM ciphertext of the KEK
+     * @throws IllegalArgumentException if {@code plaintextKek} is not 32 bytes
+     * @throws KmsOperationException    if the JCE operation fails
+     */
+    @Override
+    public String wrapNewKek(byte[] plaintextKek) {
+        if (plaintextKek == null || plaintextKek.length != 32) {
+            throw new IllegalArgumentException("New KEK must be exactly 32 bytes");
+        }
+        try {
+            byte[] iv = generateIv();
+            SecretKey kekKey = new SecretKeySpec(localKek, "AES");
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
+            Cipher cipher = Cipher.getInstance(AES_GCM_ALGORITHM);
+            cipher.init(Cipher.ENCRYPT_MODE, kekKey, gcmSpec);
+            byte[] ciphertext = cipher.doFinal(plaintextKek);
+            return Base64.getEncoder().encodeToString(prependIv(iv, ciphertext));
+        } catch (Exception e) {
+            throw new KmsOperationException("Failed to wrap new KEK in local-dev mode", e);
+        }
     }
 
     /**
@@ -126,8 +172,8 @@ public class LocalDevKmsAdapter implements KmsProvider {
      * Returns stub metadata for the local dev key.
      *
      * <p>No real KMS is available in the local-dev profile, so this returns a synthetic
-     * {@link KeyMetadata} indicating the key is enabled. The tamper reconciliation job
-     * must not run against the local-dev adapter.
+     * {@link KeyMetadata} indicating the key is enabled. No real KMS state is tracked
+     * in local-dev mode.
      *
      * @param kmsKeyId not used; the local adapter has a single fixed key
      * @return synthetic metadata for the local dev key

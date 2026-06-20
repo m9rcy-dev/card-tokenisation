@@ -6,23 +6,16 @@ import com.yourorg.tokenisation.domain.KeyType;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
-import software.amazon.awssdk.core.SdkBytes;
-import software.amazon.awssdk.services.kms.KmsClient;
-import software.amazon.awssdk.services.kms.model.DecryptRequest;
-import software.amazon.awssdk.services.kms.model.EncryptRequest;
 
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
-import java.util.Base64;
-import java.util.Map;
 
 /**
  * Seeds an initial ACTIVE KEK and HMAC key version when running with the {@code localstack}
@@ -53,18 +46,15 @@ public class LocalStackKeySeeder implements ApplicationRunner {
     private static final int    ROTATE_BY_DAYS = 365;
 
     private final KeyVersionRepository keyVersionRepository;
-    private final KmsClient            kmsClient;
+    private final KmsProvider          kmsProvider;
     private final AesGcmCipher         cipher;
-    private final String               masterKeyArn;
 
     public LocalStackKeySeeder(KeyVersionRepository keyVersionRepository,
-                               KmsClient kmsClient,
-                               AesGcmCipher cipher,
-                               @Value("${kms.aws.master-key-arn}") String masterKeyArn) {
+                               KmsProvider kmsProvider,
+                               AesGcmCipher cipher) {
         this.keyVersionRepository = keyVersionRepository;
-        this.kmsClient            = kmsClient;
+        this.kmsProvider          = kmsProvider;
         this.cipher               = cipher;
-        this.masterKeyArn         = masterKeyArn;
     }
 
     @Override
@@ -78,23 +68,21 @@ public class LocalStackKeySeeder implements ApplicationRunner {
             log.debug("LocalStackKeySeeder: ACTIVE KEK already present — skipping");
             return;
         }
-        log.info("LocalStackKeySeeder: seeding initial KEK via LocalStack KMS");
+        log.info("LocalStackKeySeeder: seeding initial KEK");
 
         byte[] kekBytes = new byte[32];
         new SecureRandom().nextBytes(kekBytes);
-        byte[] encryptedKekRaw = kmsClient.encrypt(EncryptRequest.builder()
-                .keyId(masterKeyArn)
-                .plaintext(SdkBytes.fromByteArray(kekBytes))
-                .encryptionContext(Map.of("purpose", "kek-unwrap"))
-                .build())
-                .ciphertextBlob().asByteArray();
-        Arrays.fill(kekBytes, (byte) 0);
+        String b64Blob;
+        try {
+            b64Blob = kmsProvider.wrapNewKek(kekBytes);
+        } finally {
+            Arrays.fill(kekBytes, (byte) 0);
+        }
 
-        String b64Blob = Base64.getEncoder().encodeToString(encryptedKekRaw);
         Instant now = Instant.now();
         KeyVersion kek = KeyVersion.builder()
                 .keyType(KeyType.KEK)
-                .kmsKeyId(masterKeyArn)
+                .kmsKeyId("localstack")
                 .kmsProvider("AWS_KMS")
                 .keyAlias(KEK_ALIAS)
                 .encryptedKekBlob(b64Blob)
@@ -116,15 +104,7 @@ public class LocalStackKeySeeder implements ApplicationRunner {
         log.info("LocalStackKeySeeder: seeding initial HMAC key");
 
         KeyVersion activeKek = keyVersionRepository.findActiveKekOrThrow();
-        byte[] encryptedKekBlob = Base64.getDecoder().decode(activeKek.getEncryptedKekBlob());
-
-        // Unwrap KEK via LocalStack KMS to encrypt the HMAC secret at app level
-        byte[] kekBytes = kmsClient.decrypt(DecryptRequest.builder()
-                .ciphertextBlob(SdkBytes.fromByteArray(encryptedKekBlob))
-                .keyId(masterKeyArn)
-                .encryptionContext(Map.of("purpose", "kek-unwrap"))
-                .build())
-                .plaintext().asByteArray();
+        byte[] kekBytes = kmsProvider.unwrapKek(activeKek.getEncryptedKekBlob());
 
         byte[] hmacBytes = new byte[32];
         new SecureRandom().nextBytes(hmacBytes);

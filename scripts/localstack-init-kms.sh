@@ -7,12 +7,14 @@
 set -euo pipefail
 
 KEY_ARN=$(awslocal kms create-key \
+    --region ap-southeast-2 \
     --description "card-tokenisation-kek" \
     --key-usage ENCRYPT_DECRYPT \
     --query 'KeyMetadata.Arn' \
     --output text)
 
 awslocal kms create-alias \
+    --region ap-southeast-2 \
     --alias-name "alias/card-tokenisation-kek" \
     --target-key-id "$KEY_ARN"
 

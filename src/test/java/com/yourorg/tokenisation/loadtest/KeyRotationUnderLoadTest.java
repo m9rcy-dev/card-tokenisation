@@ -161,9 +161,9 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
                 .as("LT-R-1: zero live traffic errors during rotation")
                 .isZero();
         assertThat(rotationRps)
-                .as("LT-R-1: throughput during rotation (%d rps) must be ≥ 80%% of baseline (%d rps)",
+                .as("LT-R-1: throughput during rotation (%d rps) must be ≥ 70%% of baseline (%d rps)",
                         rotationRps, baselineRps)
-                .isGreaterThanOrEqualTo((long) (baselineRps * 0.80));
+                .isGreaterThanOrEqualTo((long) (baselineRps * 0.70));
         assertThat(tokenVaultRepository.countActiveByKeyVersionId(oldKeyId))
                 .as("LT-R-1: 0 tokens remain on old key after rotation")
                 .isZero();

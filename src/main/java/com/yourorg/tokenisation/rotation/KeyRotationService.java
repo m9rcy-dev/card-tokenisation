@@ -14,7 +14,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
@@ -69,7 +72,21 @@ public class KeyRotationService {
         KeyVersion newKey = buildNewKekVersion(newKeyAlias, activeKey, KeyStatus.ACTIVE, null);
         keyVersionRepository.save(newKey);
 
-        loadAndPromoteNewKey(newKey);
+        // Promote the ring AFTER the transaction commits so that concurrent tokenisations
+        // cannot observe the new ring key before the new key_versions row is visible in DB.
+        // Without this, findById(newKeyVersionId) inside TokenisationService would fail
+        // for any request that hits between ring promotion and DB commit.
+        final KeyVersion savedNewKey = newKey;
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    loadAndPromoteNewKey(savedNewKey);
+                }
+            });
+        } else {
+            loadAndPromoteNewKey(savedNewKey);
+        }
 
         auditLogger.logKeyEvent(
                 AuditEventType.KEY_ROTATION_STARTED,
@@ -106,7 +123,17 @@ public class KeyRotationService {
         KeyVersion newKey = buildNewKekVersion(newKeyAlias, compromisedKey, KeyStatus.ACTIVE, null);
         keyVersionRepository.save(newKey);
 
-        loadAndPromoteNewKey(newKey);
+        final KeyVersion savedNewKey = newKey;
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    loadAndPromoteNewKey(savedNewKey);
+                }
+            });
+        } else {
+            loadAndPromoteNewKey(savedNewKey);
+        }
 
         auditLogger.logKeyEvent(
                 AuditEventType.KEY_INTEGRITY_VIOLATION,
@@ -140,6 +167,16 @@ public class KeyRotationService {
 
     private KeyVersion buildNewKekVersion(String alias, KeyVersion referenceKey,
                                           KeyStatus status, RotationReason rotationReason) {
+        // Generate genuinely new KEK material — rotation must not reuse the old key bytes.
+        byte[] newKekBytes = new byte[32];
+        new SecureRandom().nextBytes(newKekBytes);
+        String newEncryptedKekBlob;
+        try {
+            newEncryptedKekBlob = kmsProvider.wrapNewKek(newKekBytes);
+        } finally {
+            Arrays.fill(newKekBytes, (byte) 0);
+        }
+
         Instant now = Instant.now();
         long maxAgeDays = rotationProperties.getCompliance().getMaxKeyAgeDays();
         return KeyVersion.builder()
@@ -147,7 +184,7 @@ public class KeyRotationService {
                 .kmsKeyId(referenceKey.getKmsKeyId())
                 .kmsProvider(referenceKey.getKmsProvider())
                 .keyAlias(alias)
-                .encryptedKekBlob(referenceKey.getEncryptedKekBlob())
+                .encryptedKekBlob(newEncryptedKekBlob)
                 .status(status)
                 .rotationReason(rotationReason)
                 .activatedAt(now)

@@ -1,10 +1,10 @@
 package com.yourorg.tokenisation;
 
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
+import com.yourorg.tokenisation.kms.KmsProvider;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.Ordered;
@@ -18,19 +18,15 @@ import org.testcontainers.containers.localstack.LocalStackContainer;
 import org.testcontainers.utility.DockerImageName;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
-import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.kms.KmsClient;
 import software.amazon.awssdk.services.kms.model.CreateKeyRequest;
-import software.amazon.awssdk.services.kms.model.EncryptRequest;
 import software.amazon.awssdk.services.kms.model.KeyUsageType;
 
 import java.security.SecureRandom;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.Base64;
-import java.util.Map;
 
 /**
  * Base class for integration tests that require a real AWS KMS API via LocalStack.
@@ -84,7 +80,7 @@ public abstract class AbstractLocalStackIntegrationTest {
         POSTGRES.start();
 
         LOCALSTACK = new LocalStackContainer(
-                DockerImageName.parse("localstack/localstack:latest"))
+                DockerImageName.parse("localstack/localstack:3.8.1"))
                 .withServices(LocalStackContainer.Service.KMS);
         LOCALSTACK.start();
 
@@ -132,10 +128,9 @@ public abstract class AbstractLocalStackIntegrationTest {
         @Bean
         @Order(Ordered.HIGHEST_PRECEDENCE)
         public ApplicationRunner localStackSeeder(
-                KmsClient kmsClient,
+                KmsProvider kmsProvider,
                 JdbcTemplate jdbc,
-                AesGcmCipher cipher,
-                @Value("${kms.aws.master-key-arn}") String keyArn) {
+                AesGcmCipher cipher) {
             return args -> {
                 Boolean hasKek = jdbc.queryForObject(
                         "SELECT EXISTS(SELECT 1 FROM key_versions WHERE key_type='KEK' AND key_alias=?)",
@@ -144,38 +139,31 @@ public abstract class AbstractLocalStackIntegrationTest {
 
                 SecureRandom rng = new SecureRandom();
 
-                // 1. Generate KEK bytes and wrap with the LocalStack KMS key
+                // 1. Generate KEK bytes, wrap via KmsProvider (AwsKmsAdapter → LocalStack KMS.Encrypt),
+                //    then immediately encrypt the HMAC secret under the same bytes before zeroing.
                 byte[] kekBytes = new byte[32];
                 rng.nextBytes(kekBytes);
-
-                byte[] encryptedKekRaw = kmsClient.encrypt(EncryptRequest.builder()
-                        .keyId(keyArn)
-                        .plaintext(SdkBytes.fromByteArray(kekBytes))
-                        .encryptionContext(Map.of("purpose", "kek-unwrap"))
-                        .build())
-                        .ciphertextBlob().asByteArray();
-                String b64KekBlob = Base64.getEncoder().encodeToString(encryptedKekRaw);
-
-                Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 3600));
-                String kekId = jdbc.queryForObject("""
-                        INSERT INTO key_versions (kms_key_id, kms_provider, key_alias,
-                            encrypted_kek_blob, key_type, status, activated_at, rotate_by, created_by)
-                        VALUES (?, 'AWS_KMS', ?, ?, 'KEK', 'ACTIVE', now(), ?, ?)
-                        RETURNING id::text
-                        """,
-                        String.class,
-                        keyArn, SEED_KEK_ALIAS, b64KekBlob, rotateBy, "localstack-seeder");
-
-                // 2. Generate HMAC secret and wrap it with the KEK via AES-GCM
                 byte[] hmacBytes = new byte[32];
                 rng.nextBytes(hmacBytes);
+                String b64KekBlob;
                 byte[] encryptedSecret;
                 try {
+                    b64KekBlob     = kmsProvider.wrapNewKek(kekBytes);
                     encryptedSecret = cipher.encryptBytes(hmacBytes, kekBytes);
                 } finally {
                     Arrays.fill(kekBytes,  (byte) 0);
                     Arrays.fill(hmacBytes, (byte) 0);
                 }
+
+                Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 3600));
+                String kekId = jdbc.queryForObject("""
+                        INSERT INTO key_versions (kms_key_id, kms_provider, key_alias,
+                            encrypted_kek_blob, key_type, status, activated_at, rotate_by, created_by)
+                        VALUES ('localstack', 'AWS_KMS', ?, ?, 'KEK', 'ACTIVE', now(), ?, ?)
+                        RETURNING id::text
+                        """,
+                        String.class,
+                        SEED_KEK_ALIAS, b64KekBlob, rotateBy, "localstack-seeder");
 
                 jdbc.update("""
                         INSERT INTO key_versions (kms_key_id, kms_provider, key_alias,

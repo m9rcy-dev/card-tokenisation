@@ -92,7 +92,7 @@ class TokenisationServiceTest {
         when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
         when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -179,7 +179,7 @@ class TokenisationServiceTest {
         when(panHasher.hashWithVersion(VALID_PAN, oldHmacVersionId)).thenReturn(oldHash);
         when(tokenVaultRepository.findActiveByPanHash(oldHash)).thenReturn(Optional.empty());
         when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -271,7 +271,7 @@ class TokenisationServiceTest {
         when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
         when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenThrow(
                 new com.yourorg.tokenisation.crypto.EncryptionException("AES-GCM encryption failed"));
 
@@ -342,7 +342,7 @@ class TokenisationServiceTest {
         when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.empty());
         when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -365,7 +365,7 @@ class TokenisationServiceTest {
         when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.empty());
         when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -386,7 +386,7 @@ class TokenisationServiceTest {
         // findActiveByPanHash returns THE SAME vault — identity case, no conflict
         when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.of(vault));
         when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 

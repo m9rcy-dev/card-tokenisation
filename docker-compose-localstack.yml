@@ -14,23 +14,24 @@ services:
       retries: 5
 
   localstack:
-    image: localstack/localstack:latest
+    image: localstack/localstack:3.8.1
     ports:
       - "4566:4566"
     environment:
       SERVICES: kms
       DEFAULT_REGION: ap-southeast-2
-      # Set LOCALSTACK_AUTH_TOKEN in your environment for LocalStack Pro features (not required for KMS)
+      AWS_DEFAULT_REGION: ap-southeast-2
+      # localstack/localstack:3.x includes KMS in the community edition (no auth token required).
+      # Versions 4.x and above (2026.x) require LOCALSTACK_AUTH_TOKEN even for KMS.
       LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
     volumes:
       - ./scripts/localstack-init-kms.sh:/etc/localstack/init/ready.d/01-init-kms.sh
-      - localstack-tmp:/tmp/localstack
+      # NOTE: do NOT mount a volume at /tmp/localstack — LocalStack 3.x deletes that path
+      # on startup and crashes with EBUSY if it is a mount point. The init hook writes the
+      # KMS key ARN to /tmp/localstack/kms-key-arn inside the container; the Makefile reads
+      # it via "docker compose exec" so no host-side mount is needed.
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -q 'running'"]
       interval: 5s
       timeout: 10s
       retries: 15
-
-volumes:
-  # Shared volume so the init hook can write the KMS key ARN and the host can read it
-  localstack-tmp:

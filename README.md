@@ -9,6 +9,9 @@ Replaces raw PANs (Primary Account Numbers) with opaque, irreversible tokens. Su
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+  - [Running locally (terminal)](#running-locally-terminal)
+  - [Running from an IDE](#running-from-an-ide)
+  - [Running with real AWS KMS](#running-with-real-aws-kms)
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
 - [Running Tests](#running-tests)
@@ -27,7 +30,7 @@ Replaces raw PANs (Primary Account Numbers) with opaque, irreversible tokens. Su
 
 - Java 21 (`JAVA_HOME` must point to a Java 21 JDK)
 - Maven 3.9+
-- Docker (for Testcontainers in tests)
+- Docker (for PostgreSQL container and Testcontainers in tests)
 
 ```bash
 # Verify Java version
@@ -37,33 +40,110 @@ java -version   # must be 21
 JAVA_HOME=/opt/homebrew/opt/openjdk@21 mvn -version
 ```
 
-### Running locally
+### Running locally (terminal)
+
+The simplest path — one command starts PostgreSQL, runs Flyway migrations, and boots the app using the built-in local-dev KMS (no AWS account or LocalStack required):
 
 ```bash
-# 1. Set required environment variables
-export DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
-export DATASOURCE_USER=tokenisation_app
-export DATASOURCE_PASSWORD=change_me
-export PAN_HASH_SECRET=your-32-byte-secret-here!!!!!!!!
-export TAMPER_DETECTION_SECRET=another-32-byte-secret-here!!!!!
-export KMS_PROVIDER=local-dev
-
-# 2. Start with local dev KMS (no AWS needed)
-JAVA_HOME=/opt/homebrew/opt/openjdk@21 mvn spring-boot:run
+make start
 ```
 
-The application starts on port 8080. Swagger UI is available at:
-```
-http://localhost:8080/swagger-ui.html
+The application starts on port 8080. Swagger UI: `http://localhost:8080/swagger-ui.html`
+
+To stop: `Ctrl+C` to kill the app, then `make stop-postgres` to remove the container.
+
+---
+
+### Running from an IDE
+
+Use this when you want to attach a debugger or set breakpoints. Two KMS options are available.
+
+#### Option A — Local-dev KMS (simplest, no AWS)
+
+Uses an in-process software KMS. No AWS account, no Docker KMS container needed.
+
+**Step 1:** Start PostgreSQL:
+```bash
+make start-postgres   # starts the container and waits until ready
 ```
 
-### Running with AWS KMS
+Flyway migrations run automatically when the Spring Boot app starts.
+
+**Step 2:** Set these environment variables in your IDE run configuration:
+
+```
+DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
+DATASOURCE_USER=tokenisation_app
+DATASOURCE_PASSWORD=local-dev-password
+PAN_HASH_SECRET=local-dev-pan-hash-secret-32bytes!
+KMS_PROVIDER=local-dev
+KMS_LOCAL_DEV_KEK_HEX=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+HIKARI_MAX_POOL_SIZE=60
+VIRTUAL_THREADS_ENABLED=true
+```
+
+**Step 3:** Run the `TokenisationApplication` main class from your IDE.
+
+> In IntelliJ: **Run → Edit Configurations → Environment variables** — click the `...` button to paste multiple `KEY=VALUE` lines at once.
+
+---
+
+#### Option B — LocalStack KMS (real AWS KMS API, local)
+
+Uses LocalStack to simulate AWS KMS. Use this when you need to test the full AWS KMS code path (key wrapping, `EncryptionContext`, IAM-style auth) without a real AWS account.
+
+**Step 1:** Start PostgreSQL and LocalStack, create the KMS key:
+```bash
+make start-localstack
+```
+
+This prints the key ARN when the init hook completes:
+```
+LocalStack KMS ready. Key ARN: arn:aws:kms:ap-southeast-2:000000000000:key/<uuid>
+```
+
+Copy the ARN to your clipboard:
+```bash
+docker compose -f docker-compose-localstack.yml exec -T localstack \
+  cat /tmp/localstack/kms-key-arn | pbcopy
+```
+
+**Step 2:** Set these environment variables in your IDE run configuration:
+
+```
+SPRING_PROFILES_ACTIVE=localstack
+AWS_KMS_KEY_ARN=<paste ARN here>
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+KMS_AWS_ENDPOINT_OVERRIDE=http://localhost:4566
+DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
+DATASOURCE_USER=tokenisation_app
+DATASOURCE_PASSWORD=local-dev-password
+PAN_HASH_SECRET=local-dev-pan-hash-secret-32bytes!
+HIKARI_MAX_POOL_SIZE=60
+VIRTUAL_THREADS_ENABLED=true
+```
+
+> `AWS_REGION` is not required — the `localstack` profile defaults it to `ap-southeast-2`.
+
+**Step 3:** Run the `TokenisationApplication` main class from your IDE.
+
+**Stopping:**
+```bash
+make stop-localstack   # stops and removes both Postgres and LocalStack containers
+```
+
+> **Note:** the KMS key ARN changes every time you recreate the LocalStack container. Update `AWS_KMS_KEY_ARN` in your run config after each `make stop-localstack && make start-localstack`.
+
+---
+
+### Running with real AWS KMS
 
 ```bash
 export KMS_PROVIDER=aws
 export AWS_REGION=ap-southeast-2
 export AWS_KMS_KEY_ARN=arn:aws:kms:ap-southeast-2:123456789012:key/your-key-id
-# Use IAM role — do not set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in production
+# Use an IAM role — do not set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in production
 ```
 
 ---
@@ -367,6 +447,139 @@ load-test concurrency  <  HikariCP pool size  ≤  PostgreSQL max_connections
 ```
 
 The `<` (strict less-than) between concurrency and pool size is intentional — there must be a buffer for background framework connections. Setting concurrency == pool size leaves zero margin and causes timeouts. Breaking any layer causes failures in that layer.
+
+---
+
+## Gatling Simulations
+
+Gatling simulations test the running application from the outside — they require `make start` first and connect to it over HTTP like a real client. Unlike the `make load-test` suite (which uses `@SpringBootTest` and Testcontainers), Gatling tests a real standalone instance against a real PostgreSQL container.
+
+### Prerequisites
+
+**Always recreate the Postgres container before Gatling testing.** The container needs specific tuning that only takes effect at container creation time.
+
+#### Why Postgres tuning matters
+
+On macOS, Docker Desktop virtualises disk I/O through a VM. PostgreSQL's default `synchronous_commit=on` makes every `COMMIT` wait for a `fsync()` call before returning. On macOS Docker Desktop this `fsync()` can take 50–100ms per write (vs < 1ms on Linux bare metal). Under 333 rps of tokenisation (each requiring 3–4 DB writes), this means:
+
+1. All HikariCP connections are blocked waiting for fsync
+2. HikariCP's keepalive test (`isValid()`) times out on all connections simultaneously
+3. HikariCP evicts the entire pool → `total=0, waiting=N`
+4. The app returns 500s for every request
+
+The fix is `synchronous_commit=off`: commits are acknowledged immediately; WAL is still written, just asynchronously. Data written within the last ~200ms could be lost on a crash — completely acceptable for load testing.
+
+The container also needs `fsync=off` to disable all OS-level fsync calls and `full_page_writes=off` to reduce WAL volume. All three together reduce write latency from ~100ms to < 1ms on macOS Docker Desktop.
+
+#### Setup steps
+
+```bash
+make stop-postgres      # removes the old container (no synchronous_commit=off)
+make start              # creates a new container with all Postgres tuning,
+                        # runs Flyway migrations, then starts the app
+                        # (pool=30, virtual threads=true are exported automatically)
+```
+
+Verify the tuning took effect:
+```bash
+docker exec card-tokenisation-db psql -U tokenisation_app -d tokenisation \
+  -c "SHOW synchronous_commit; SHOW max_connections;"
+```
+Expected output: `synchronous_commit = off`, `max_connections = 200`.
+
+Also check the app log for:
+```
+HikariPool-1 - configuration: maximumPoolSize=30
+```
+
+### Running simulations
+
+```bash
+# Default: MixedSimulation at 20k requests (70% tokenise / 30% detokenise)
+make gatling-test
+
+# Scale up — 100k requests over 120 seconds = 833 rps
+make gatling-test GATLING_SCALE=100k
+
+# Reduce RPS by spreading over a longer window (333 rps instead of 833)
+make gatling-test GATLING_SCALE=100k GATLING_DURATION=300
+
+# Run a specific simulation
+make gatling-test GATLING_SIM=TokenisationSimulation GATLING_SCALE=50k
+make gatling-test GATLING_SIM=DetokenisationSimulation GATLING_SCALE=50k
+make gatling-test GATLING_SIM=RotationSimulation GATLING_SCALE=20k
+```
+
+### How scale works
+
+`GATLING_SCALE` sets the total number of requests. `GATLING_DURATION` (default 120 s) is the sustained-load window. The simulation derives:
+
+```
+targetRps = GATLING_SCALE / GATLING_DURATION
+```
+
+Gatling injects `targetRps` new virtual users per second (open workload model — each user fires one request and exits). For `GATLING_SCALE=100k GATLING_DURATION=120`: 833 new users/sec × 120 s ≈ 100k total requests. A developer laptop may not sustain 833 rps without tuning; use `GATLING_DURATION=300` to drop to 333 rps.
+
+### Available simulations
+
+| Simulation | Default via `GATLING_SIM=` | What it measures |
+|------------|---------------------------|------------------|
+| `MixedSimulation` | *(default)* | 70% tokenise + 30% detokenise — production traffic pattern |
+| `TokenisationSimulation` | `TokenisationSimulation` | Pure write throughput — every request is a unique PAN |
+| `DetokenisationSimulation` | `DetokenisationSimulation` | Pure read throughput — seeds 10k tokens then reads them |
+| `RotationSimulation` | `RotationSimulation` | Mixed traffic while KEK rotation runs; **requires fresh app start** |
+
+#### MixedSimulation (recommended)
+
+Seeds 10k tokens in the setup phase, then fires tokenise (70%) and detokenise (30%) concurrently. Gatling's HTML report shows separate latency breakdowns for each operation.
+
+```bash
+make gatling-test                            # 20k requests, ~166 rps
+make gatling-test GATLING_SCALE=100k         # 100k requests, 833 rps
+make gatling-test GATLING_SCALE=100k GATLING_DURATION=300   # 333 rps
+```
+
+#### TokenisationSimulation
+
+Pure write load. Every request generates a fresh random Luhn-valid PAN so the deduplication path is never hit — this exercises the full encrypt-and-insert code path each time.
+
+```bash
+make gatling-test GATLING_SIM=TokenisationSimulation GATLING_SCALE=50k
+```
+
+#### DetokenisationSimulation
+
+Seeds 10k tokens in `before()`, then fires GET requests against them at random. At large scales each token is read multiple times, which exercises the read-heavy path (no writes). Use this to measure detokenise latency and throughput independently.
+
+```bash
+make gatling-test GATLING_SIM=DetokenisationSimulation GATLING_SCALE=50k
+```
+
+#### RotationSimulation
+
+Triggers a KEK rotation via `POST /api/v1/admin/keys/rotate`, then drives 70/30 mixed traffic while the rotation batch runs in the background. Validates that zero errors occur during rotation and that all pre-seeded tokens remain detokenisable throughout.
+
+> **Requires a fresh app start before each run.** The simulation resets `key_versions` in the database but cannot reset the application's in-memory key ring. If the app already completed a rotation the ring holds a different key than the DB expects, causing failures.
+
+```bash
+make start   # fresh start — ring must match DB key state
+make gatling-test GATLING_SIM=RotationSimulation GATLING_SCALE=20k
+```
+
+Admin credentials default to `admin / change_me`. Override if your instance uses different credentials:
+
+```bash
+make gatling-test GATLING_SIM=RotationSimulation \
+  -DadminUser=myuser -DadminPass=mypass
+```
+
+### Reading results
+
+Gatling writes an HTML report to `target/gatling/<simulation-name>-<timestamp>/index.html`. Open it in a browser for p50/p75/p95/p99 latency breakdown, throughput over time, and per-request error details.
+
+### Assertions
+
+All simulations assert p99 ≤ 2000ms and ≥ 99% success rate. `RotationSimulation` uses a wider p99 threshold of 5000ms to accommodate the rotation batch overhead. A failed assertion exits Maven with a non-zero status code.
 
 ---
 
