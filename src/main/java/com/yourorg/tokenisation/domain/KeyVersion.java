@@ -158,4 +158,13 @@ public class KeyVersion {
         this.status = KeyStatus.COMPROMISED;
         this.retiredAt = compromisedAt;
     }
+
+    /**
+     * Replaces the encrypted HMAC secret with a blob re-encrypted under a new KEK.
+     * Called by {@code RotationJob.rewrapHmacSecrets} before the old KEK is retired.
+     */
+    public void rewrapSecret(byte[] newEncryptedSecret, UUID newEncryptingKekId) {
+        this.encryptedSecret  = newEncryptedSecret.clone();
+        this.encryptingKekId  = newEncryptingKekId;
+    }
 }
