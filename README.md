@@ -139,12 +139,50 @@ make stop-localstack   # stops and removes both Postgres and LocalStack containe
 
 ### Running with real AWS KMS
 
-```bash
-export KMS_PROVIDER=aws
-export AWS_REGION=ap-southeast-2
-export AWS_KMS_KEY_ARN=arn:aws:kms:ap-southeast-2:123456789012:key/your-key-id
-# Use an IAM role — do not set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in production
+Use this when you have created an AWS KMS key and want to connect the app directly — for example, using an IAM user with static credentials for local testing.
+
+**Step 1:** Set these environment variables in your IDE run configuration:
+
 ```
+AWS_KMS_KEY_ARN=arn:aws:kms:ap-southeast-2:<account-id>:key/<key-id>
+AWS_REGION=ap-southeast-2
+AWS_ACCESS_KEY_ID=<your-access-key>
+AWS_SECRET_ACCESS_KEY=<your-secret-key>
+DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
+DATASOURCE_USER=tokenisation_app
+DATASOURCE_PASSWORD=local-dev-password
+PAN_HASH_SECRET=local-dev-pan-hash-secret-32bytes!
+KMS_AWS_SEED_ON_STARTUP=true
+HIKARI_MAX_POOL_SIZE=60
+VIRTUAL_THREADS_ENABLED=true
+```
+
+> **`KMS_AWS_SEED_ON_STARTUP=true`** tells `AwsKeySeeder` to create the initial KEK and HMAC rows on first boot. It is idempotent — if rows already exist the seeder skips silently. Remove it (or set to `false`) once your database has been seeded, or leave it on — it is safe to keep enabled for dev environments.
+
+> **No Spring profile needed.** Do not set `SPRING_PROFILES_ACTIVE` — the default profile uses `kms.provider=aws` via the `AWS_KMS_KEY_ARN` env var. Setting `localstack` profile would point the endpoint at `localhost:4566`.
+
+> **IAM user vs session credentials.** Static IAM user credentials (access key + secret only) do not need `AWS_SESSION_TOKEN`. SSO or assumed-role credentials require `AWS_SESSION_TOKEN` and expire — obtain them via `aws sts get-session-token` or your SSO login flow.
+
+**Step 2:** Start PostgreSQL:
+```bash
+make start-postgres
+```
+
+**Step 3:** Run the `TokenisationApplication` main class from your IDE. On first boot you will see:
+```
+AwsKeySeeder: seeding initial KEK via AWS KMS
+AwsKeySeeder: seeded ACTIVE KEK [<uuid>]
+AwsKeySeeder: seeding initial HMAC key
+AwsKeySeeder: seeded ACTIVE HMAC [<uuid>]
+```
+
+On subsequent restarts the seeder detects existing rows and skips:
+```
+AwsKeySeeder: ACTIVE KEK already present — skipping
+AwsKeySeeder: ACTIVE HMAC already present — skipping
+```
+
+> **Production note:** never set `KMS_AWS_SEED_ON_STARTUP=true` in production. Production key material must be provisioned via a controlled key ceremony, not auto-seeded on startup.
 
 ---
 
