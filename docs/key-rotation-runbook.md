@@ -23,9 +23,9 @@ Each token's PAN is encrypted with a unique **Data Encryption Key (DEK)**. The D
 
 When we rotate keys, we are changing the KEK — not re-encrypting the PAN itself. The rotation process:
 
-1. Creates a new KEK in KMS and a new `key_versions` row.
+1. Creates a new KEK, wraps it via KMS (1 KMS call), and inserts a new `key_versions` row.
 2. Transitions the old `key_versions` row to `ROTATING` (scheduled) or `COMPROMISED` (emergency).
-3. For each token: fetches the old encrypted DEK, asks KMS to decrypt it with the old KEK and re-encrypt with the new KEK (this is the `rewrapDek` operation). The PAN ciphertext is **never touched**.
+3. For each token: decrypts the old encrypted DEK using the in-memory old KEK, then re-encrypts it with the in-memory new KEK — all in-process AES-GCM, **zero KMS calls per token**. The PAN ciphertext is **never touched**.
 4. Once all tokens are migrated, the old key is marked `RETIRED`.
 
 This means rotation is safe to run while the service is live — tokens encrypted under the old key remain readable until they are migrated, and new tokens use the new key immediately.
@@ -177,7 +177,6 @@ HMAC keys sign the `pan_hash` stored in `token_vault`. Rotating them requires re
 
 - Annual compliance rotation (same cadence as KEK, default `rotate_by` is 365 days from activation)
 - HMAC secret suspected of leaking
-- Migration from the bootstrap env-var secret to a proper `SecureRandom` key (first rotation after initial deployment)
 
 ### Step 1 — Verify pre-rotation HMAC key state
 
@@ -200,9 +199,9 @@ curl -X POST https://<host>/api/v1/admin/hmac-keys/rotate \
 
 What happens synchronously:
 - The old HMAC key moves from `ACTIVE` → `ROTATING`.
-- A new 32-byte `SecureRandom` HMAC key is generated, encrypted under the active KEK, and persisted as a new `ACTIVE` HMAC row.
-- The new key is loaded into `InMemoryHmacKeyRing` and promoted to active.
-- All new tokenisations immediately use the new key.
+- A new 32-byte `SecureRandom` HMAC secret is generated and encrypted **directly by AWS KMS CMK** (`purpose=hmac-key` encryption context) — the KEK is not involved. The ciphertext is persisted as a new `ACTIVE` HMAC row (1 KMS call total).
+- The new secret is loaded into `InMemoryHmacKeyRing` and promoted to active.
+- All new tokenisations immediately use the new secret.
 
 ### Step 3 — Monitor re-hashing batch
 
@@ -233,10 +232,6 @@ FROM token_audit_log
 WHERE event_type IN ('HMAC_ROTATION_STARTED', 'HMAC_ROTATION_COMPLETED')
 ORDER BY created_at DESC LIMIT 4;
 ```
-
-### Step 5 — Retire the old env-var secret (first rotation only)
-
-After the first HMAC rotation completes, the `tokenisation.pan-hash-secret` env var is no longer needed. All `pan_hash` values now use the rotated key. Remove `PAN_HASH_SECRET` from your secrets manager and `application.yml` to prevent accidental re-use.
 
 ---
 
@@ -314,15 +309,16 @@ If `RotationBatchProcessor.self` is null (misconfigured Spring context), no toke
 
 ### Unexpected HMAC decryption failure at startup
 
-**Symptom:** Log line: `AES-GCM auth tag mismatch` during `KeyRingInitialiser` Phase 2 (HMAC ring load).
+**Symptom:** Log line: `KMS InvalidCiphertextException` or `software.amazon.awssdk.services.kms.model.InvalidCiphertextException` during `KeyRingInitialiser` Phase 2 (HMAC ring load).
 
-**Cause:** The `encrypted_secret` column in a `key_versions` HMAC row was modified directly in the database. The GCM auth tag embedded in the blob detects the tamper.
+**Cause:** The `encrypted_secret` column in a `key_versions` HMAC row was modified directly in the database, or the row was copied from a different environment whose CMK does not match the current KMS key. KMS rejects the ciphertext because it was not produced by this CMK (or encryption context mismatch: the stored blob must have been produced with `purpose=hmac-key`).
 
 **Action:**
 1. Do not restart repeatedly — each failed startup attempt logs evidence.
 2. Check who modified the row: `SELECT * FROM token_audit_log WHERE event_type LIKE 'HMAC%' ORDER BY created_at DESC LIMIT 10;`
-3. If DB-level tampering is confirmed, treat as a security incident and initiate emergency KEK rotation to limit blast radius while the HMAC row is restored from backup.
-4. Integrity of HMAC key material is enforced by AES-256-GCM authentication tags — there is no checksum column to compare manually.
+3. Confirm the `kms_key_id` and `kms_provider` columns on the failing HMAC row match the currently configured CMK ARN.
+4. If DB-level tampering is confirmed, treat as a security incident. Restore the HMAC row from a known-good backup and initiate emergency KEK rotation to limit blast radius.
+5. Integrity of HMAC key material is enforced by KMS — the CMK will not decrypt a blob produced by a different key or with a different encryption context.
 
 ---
 

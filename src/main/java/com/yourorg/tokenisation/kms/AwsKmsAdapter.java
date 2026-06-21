@@ -43,6 +43,7 @@ public class AwsKmsAdapter implements KmsProvider {
     private static final String ENCRYPTION_CONTEXT_KEY_VERSION_KEY = "keyVersionId";
     private static final String ENCRYPTION_CONTEXT_KEK_UNWRAP_VALUE = "kek-unwrap";
     private static final String ENCRYPTION_CONTEXT_DEK_WRAP_VALUE = "dek-wrap";
+    private static final String ENCRYPTION_CONTEXT_HMAC_KEY_VALUE = "hmac-key";
 
     private final KmsClient kmsClient;
     private final String masterKeyArn;
@@ -176,6 +177,61 @@ public class AwsKmsAdapter implements KmsProvider {
         } finally {
             // Plaintext DEK must not persist in memory beyond the re-wrap operation
             Arrays.fill(plaintextDek, (byte) 0);
+        }
+    }
+
+    /**
+     * Encrypts a freshly generated HMAC secret under the AWS KMS master key.
+     *
+     * <p>Uses encryption context {@code purpose=hmac-key} — distinct from {@code purpose=kek-unwrap}
+     * — so that the resulting blob cannot be cross-decrypted with a different context.
+     *
+     * @param plaintextHmacKey the raw HMAC secret bytes; must not be null
+     * @return raw KMS ciphertext bytes, suitable for BYTEA storage in {@code key_versions.encrypted_secret}
+     * @throws KmsOperationException if the KMS call fails
+     */
+    @Override
+    public byte[] wrapNewHmacKey(byte[] plaintextHmacKey) {
+        if (plaintextHmacKey == null) {
+            throw new IllegalArgumentException("plaintextHmacKey must not be null");
+        }
+        try {
+            EncryptRequest encryptRequest = EncryptRequest.builder()
+                    .keyId(masterKeyArn)
+                    .plaintext(SdkBytes.fromByteArray(plaintextHmacKey))
+                    .encryptionContext(Map.of(ENCRYPTION_CONTEXT_PURPOSE_KEY, ENCRYPTION_CONTEXT_HMAC_KEY_VALUE))
+                    .build();
+            return kmsClient.encrypt(encryptRequest).ciphertextBlob().asByteArray();
+        } catch (KmsException kmsException) {
+            throw new KmsOperationException("AWS KMS HMAC key wrap failed", kmsException);
+        }
+    }
+
+    /**
+     * Decrypts a stored HMAC secret blob using AWS KMS.
+     *
+     * <p>Asserts encryption context {@code purpose=hmac-key}. A blob encrypted with a different
+     * context will fail with an {@code InvalidCiphertextException}.
+     *
+     * @param encryptedHmacBlob raw KMS ciphertext from {@code key_versions.encrypted_secret}; must not be null
+     * @return plaintext HMAC secret bytes; caller must zero after use
+     * @throws KmsOperationException if the KMS call fails or the blob is invalid
+     */
+    @Override
+    public byte[] unwrapHmacKey(byte[] encryptedHmacBlob) {
+        if (encryptedHmacBlob == null) {
+            throw new IllegalArgumentException("encryptedHmacBlob must not be null");
+        }
+        try {
+            DecryptRequest decryptRequest = DecryptRequest.builder()
+                    .ciphertextBlob(SdkBytes.fromByteArray(encryptedHmacBlob))
+                    .keyId(masterKeyArn)
+                    .encryptionContext(Map.of(ENCRYPTION_CONTEXT_PURPOSE_KEY, ENCRYPTION_CONTEXT_HMAC_KEY_VALUE))
+                    .build();
+            log.info("Unwrapping HMAC key from AWS KMS — context: purpose=hmac-key");
+            return kmsClient.decrypt(decryptRequest).plaintext().asByteArray();
+        } catch (KmsException kmsException) {
+            throw new KmsOperationException("AWS KMS HMAC key unwrap failed", kmsException);
         }
     }
 

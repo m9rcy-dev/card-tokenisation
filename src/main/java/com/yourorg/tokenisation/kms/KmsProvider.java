@@ -85,6 +85,33 @@ public interface KmsProvider {
     byte[] rewrapDek(byte[] encryptedDek, String oldKeyVersionId, String newKeyVersionId);
 
     /**
+     * Encrypts a freshly generated HMAC secret under the KMS master key for storage.
+     *
+     * <p>Uses encryption context {@code purpose=hmac-key}, distinct from {@code purpose=kek-unwrap},
+     * so that a blob encrypted by this method cannot be decrypted via {@link #unwrapKek} and vice versa.
+     * The HMAC secret is protected directly by the CMK — independent of the application KEK.
+     *
+     * <p>Callers must zero {@code plaintextHmacKey} immediately after this method returns.
+     *
+     * @param plaintextHmacKey the raw HMAC secret bytes to protect; must not be null
+     * @return the KMS-encrypted HMAC secret blob, suitable for storage as BYTEA in {@code key_versions.encrypted_secret}
+     * @throws KmsOperationException if the KMS call fails
+     */
+    byte[] wrapNewHmacKey(byte[] plaintextHmacKey);
+
+    /**
+     * Decrypts a stored HMAC secret blob and returns the raw secret bytes.
+     *
+     * <p>Called once per HMAC key version at startup by {@code KeyRingInitialiser}.
+     * The caller must zero the returned array immediately after loading it into the HMAC ring.
+     *
+     * @param encryptedHmacBlob the KMS ciphertext as stored in {@code key_versions.encrypted_secret}; must not be null
+     * @return the raw HMAC secret bytes; caller must zero after use
+     * @throws KmsOperationException if the KMS call fails or the blob is invalid
+     */
+    byte[] unwrapHmacKey(byte[] encryptedHmacBlob);
+
+    /**
      * Retrieves metadata for a KMS key by its internal identifier.
      *
      * <p>Used for operational health checks to validate that the local

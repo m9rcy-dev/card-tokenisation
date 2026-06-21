@@ -3,7 +3,6 @@ package com.yourorg.tokenisation;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.InMemoryHmacKeyRing;
 import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.domain.KeyStatus;
@@ -77,7 +76,6 @@ class LocalStackRotationTest extends AbstractLocalStackIntegrationTest {
     @Autowired private InMemoryKekKeyRing    kekKeyRing;
     @Autowired private InMemoryHmacKeyRing   hmacKeyRing;
     @Autowired private KmsProvider           kmsProvider;
-    @Autowired private AesGcmCipher          cipher;
 
     // Discovered dynamically in @BeforeEach by key_alias
     private String seedKekId;
@@ -297,14 +295,11 @@ class LocalStackRotationTest extends AbstractLocalStackIntegrationTest {
 
     private void reloadSeedHmac() {
         KeyVersion seedHmac = keyVersionRepository.findById(UUID.fromString(seedHmacId)).orElseThrow();
-        KeyVersion encryptingKek = keyVersionRepository.findById(seedHmac.getEncryptingKekId()).orElseThrow();
-        byte[] kek = kmsProvider.unwrapKek(encryptingKek.getEncryptedKekBlob());
         byte[] hmacSecret = null;
         try {
-            hmacSecret = cipher.decryptBytes(seedHmac.getEncryptedSecret(), kek);
+            hmacSecret = kmsProvider.unwrapHmacKey(seedHmac.getEncryptedSecret());
             hmacKeyRing.load(seedHmacId, hmacSecret, seedHmac.getRotateBy());
         } finally {
-            Arrays.fill(kek, (byte) 0);
             if (hmacSecret != null) Arrays.fill(hmacSecret, (byte) 0);
         }
     }

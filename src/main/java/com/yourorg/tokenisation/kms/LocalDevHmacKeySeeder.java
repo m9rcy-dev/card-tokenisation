@@ -1,7 +1,5 @@
 package com.yourorg.tokenisation.kms;
 
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
-import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -22,8 +20,9 @@ import java.util.UUID;
  * Seeds an initial ACTIVE HMAC key version into {@code key_versions} when running with the
  * {@code local-dev} KMS provider and no ACTIVE HMAC row exists.
  *
- * <p>Uses a fixed 32-byte HMAC secret encoded as UTF-8. The secret is encrypted under the
- * active KEK using {@link AesGcmCipher#encryptBytes} and stored in the HMAC row.
+ * <p>Uses a fixed 32-byte HMAC secret encoded as UTF-8. The secret is encrypted via
+ * {@link KmsProvider#wrapNewHmacKey} (local AES-GCM in the local-dev adapter) and stored
+ * in the HMAC row directly — without a KEK intermediary.
  *
  * <p>The HMAC row is inserted with a well-known fixed UUID ({@link #SEED_HMAC_VERSION_ID})
  * so integration tests can reference it in SQL assertions without additional queries.
@@ -47,14 +46,11 @@ public class LocalDevHmacKeySeeder implements ApplicationRunner {
 
     private final KeyVersionRepository keyVersionRepository;
     private final KmsProvider kmsProvider;
-    private final AesGcmCipher cipher;
 
     public LocalDevHmacKeySeeder(KeyVersionRepository keyVersionRepository,
-                                  KmsProvider kmsProvider,
-                                  AesGcmCipher cipher) {
+                                  KmsProvider kmsProvider) {
         this.keyVersionRepository = keyVersionRepository;
         this.kmsProvider = kmsProvider;
-        this.cipher = cipher;
     }
 
     @Override
@@ -67,22 +63,19 @@ public class LocalDevHmacKeySeeder implements ApplicationRunner {
         log.warn("LocalDevHmacKeySeeder: no ACTIVE HMAC key found — seeding initial local-dev HMAC key. "
                 + "This must never happen in production.");
 
-        KeyVersion activeKek = keyVersionRepository.findActiveKekOrThrow();
-
-        byte[] kek = kmsProvider.unwrapKek(activeKek.getEncryptedKekBlob());
         byte[] secretBytes = SEED_HMAC_SECRET.getBytes(StandardCharsets.UTF_8);
         byte[] encryptedSecret;
         try {
-            encryptedSecret = cipher.encryptBytes(secretBytes, kek);
+            encryptedSecret = kmsProvider.wrapNewHmacKey(secretBytes);
         } finally {
-            Arrays.fill(kek, (byte) 0);
             Arrays.fill(secretBytes, (byte) 0);
         }
 
         Instant now = Instant.now();
         KeyVersion hmacVersion = KeyVersion.forHmac(
                 encryptedSecret,
-                activeKek.getId(),
+                "local-dev-key",
+                "LOCAL_DEV",
                 "local-dev-hmac-seed",
                 now.plus(ROTATE_BY_DAYS, ChronoUnit.DAYS),
                 "local-dev-hmac-seeder");

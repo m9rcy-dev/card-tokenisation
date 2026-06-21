@@ -2,13 +2,11 @@ package com.yourorg.tokenisation.rotation;
 
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.InMemoryHmacKeyRing;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
-import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyType;
 import com.yourorg.tokenisation.domain.KeyVersion;
+import com.yourorg.tokenisation.kms.KmsProvider;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,14 +43,11 @@ import static org.mockito.Mockito.when;
 class HmacRotationServiceTest {
 
     private static final UUID ACTIVE_HMAC_ID = UUID.fromString("aaaaaaaa-0000-0000-0000-000000000001");
-    private static final UUID ACTIVE_KEK_ID  = UUID.fromString("00000000-0000-0000-0000-000000000001");
-    private static final byte[] FAKE_KEK     = new byte[32];
     private static final byte[] FAKE_BLOB    = new byte[60]; // IV + encrypted secret + tag
 
     @Mock private KeyVersionRepository keyVersionRepository;
-    @Mock private InMemoryKekKeyRing keyRing;
+    @Mock private KmsProvider kmsProvider;
     @Mock private InMemoryHmacKeyRing hmacKeyRing;
-    @Mock private AesGcmCipher cipher;
     @Mock private AuditLogger auditLogger;
 
     private HmacRotationService service;
@@ -60,7 +55,7 @@ class HmacRotationServiceTest {
     @BeforeEach
     void setUp() {
         service = new HmacRotationService(
-                keyVersionRepository, keyRing, hmacKeyRing, cipher, auditLogger);
+                keyVersionRepository, kmsProvider, hmacKeyRing, auditLogger);
     }
 
     // ── initiateRotation ──────────────────────────────────────────────────────
@@ -68,13 +63,9 @@ class HmacRotationServiceTest {
     @Test
     void initiateRotation_transitionsActiveToRotatingAndCreatesNewVersion() {
         KeyVersion activeHmac = buildHmacVersion(ACTIVE_HMAC_ID, KeyStatus.ACTIVE);
-        KeyVersion activeKek  = buildKekVersion(ACTIVE_KEK_ID);
-        KeyMaterial kekMaterial = new KeyMaterial(ACTIVE_KEK_ID.toString(), FAKE_KEK, Instant.now().plusSeconds(3600));
 
         when(keyVersionRepository.findActiveHmacOrThrow()).thenReturn(activeHmac);
-        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKek);
-        when(keyRing.getActive()).thenReturn(kekMaterial);
-        when(cipher.encryptBytes(any(), any())).thenReturn(FAKE_BLOB);
+        when(kmsProvider.wrapNewHmacKey(any())).thenReturn(FAKE_BLOB);
         when(keyVersionRepository.saveAndFlush(any())).thenAnswer(inv -> {
             KeyVersion kv = inv.getArgument(0);
             forceId(kv, UUID.randomUUID());
@@ -112,13 +103,9 @@ class HmacRotationServiceTest {
     @Test
     void initiateRotation_zeroesNewSecretFromMemoryBeforeReturning() {
         KeyVersion activeHmac = buildHmacVersion(ACTIVE_HMAC_ID, KeyStatus.ACTIVE);
-        KeyVersion activeKek  = buildKekVersion(ACTIVE_KEK_ID);
-        KeyMaterial kekMaterial = new KeyMaterial(ACTIVE_KEK_ID.toString(), FAKE_KEK, Instant.now().plusSeconds(3600));
 
         when(keyVersionRepository.findActiveHmacOrThrow()).thenReturn(activeHmac);
-        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKek);
-        when(keyRing.getActive()).thenReturn(kekMaterial);
-        when(cipher.encryptBytes(any(), any())).thenReturn(FAKE_BLOB);
+        when(kmsProvider.wrapNewHmacKey(any())).thenReturn(FAKE_BLOB);
         when(keyVersionRepository.saveAndFlush(any())).thenAnswer(inv -> {
             forceId(inv.getArgument(0), UUID.randomUUID());
             return inv.getArgument(0);
@@ -168,26 +155,10 @@ class HmacRotationServiceTest {
 
     private static KeyVersion buildHmacVersion(UUID id, KeyStatus status) {
         KeyVersion kv = KeyVersion.forHmac(
-                FAKE_BLOB, ACTIVE_KEK_ID, "test-hmac-key",
+                FAKE_BLOB, "test-kms-key-arn", "TEST", "test-hmac-key",
                 Instant.now().plusSeconds(3600), "test");
         forceId(kv, id);
         if (status == KeyStatus.ROTATING) kv.markRotating();
-        return kv;
-    }
-
-    private static KeyVersion buildKekVersion(UUID id) {
-        KeyVersion kv = KeyVersion.builder()
-                .keyType(KeyType.KEK)
-                .keyAlias("test-kek")
-                .kmsKeyId("local-dev-key")
-                .kmsProvider("LOCAL_DEV")
-                .encryptedKekBlob("blob")
-                .status(KeyStatus.ACTIVE)
-                .activatedAt(Instant.now())
-                .rotateBy(Instant.now().plusSeconds(3600))
-                .createdBy("test")
-                .build();
-        forceId(kv, id);
         return kv;
     }
 

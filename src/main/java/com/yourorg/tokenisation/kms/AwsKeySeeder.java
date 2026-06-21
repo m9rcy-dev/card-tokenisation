@@ -1,6 +1,5 @@
 package com.yourorg.tokenisation.kms;
 
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyType;
 import com.yourorg.tokenisation.domain.KeyVersion;
@@ -44,14 +43,11 @@ public class AwsKeySeeder implements ApplicationRunner {
 
     private final KeyVersionRepository keyVersionRepository;
     private final KmsProvider          kmsProvider;
-    private final AesGcmCipher         cipher;
 
     public AwsKeySeeder(KeyVersionRepository keyVersionRepository,
-                        KmsProvider kmsProvider,
-                        AesGcmCipher cipher) {
+                        KmsProvider kmsProvider) {
         this.keyVersionRepository = keyVersionRepository;
         this.kmsProvider          = kmsProvider;
-        this.cipher               = cipher;
     }
 
     @Override
@@ -98,26 +94,21 @@ public class AwsKeySeeder implements ApplicationRunner {
             log.debug("AwsKeySeeder: ACTIVE HMAC already present — skipping");
             return;
         }
-        log.info("AwsKeySeeder: seeding initial HMAC key");
-
-        KeyVersion activeKek = keyVersionRepository.findActiveKekOrThrow();
-        byte[] kekBytes = kmsProvider.unwrapKek(activeKek.getEncryptedKekBlob());
+        log.info("AwsKeySeeder: seeding initial HMAC key via KMS direct protection");
 
         byte[] hmacBytes = new byte[32];
         new SecureRandom().nextBytes(hmacBytes);
         byte[] encryptedSecret;
         try {
-            encryptedSecret = cipher.encryptBytes(hmacBytes, kekBytes);
+            encryptedSecret = kmsProvider.wrapNewHmacKey(hmacBytes);
         } finally {
-            Arrays.fill(kekBytes,  (byte) 0);
             Arrays.fill(hmacBytes, (byte) 0);
         }
 
         Instant rotateBy = Instant.now().plus(ROTATE_BY_DAYS, ChronoUnit.DAYS);
-        KeyVersion hmac = KeyVersion.forHmac(
-                encryptedSecret, activeKek.getId(), HMAC_ALIAS, rotateBy, "aws-key-seeder");
+        KeyVersion hmac = KeyVersion.forHmac(encryptedSecret, "aws-kms", "AWS_KMS", HMAC_ALIAS, rotateBy, "aws-key-seeder");
         keyVersionRepository.saveAndFlush(hmac);
 
-        log.info("AwsKeySeeder: seeded ACTIVE HMAC [{}]", hmac.getId());
+        log.info("AwsKeySeeder: seeded ACTIVE HMAC [{}] (KMS-protected)", hmac.getId());
     }
 }

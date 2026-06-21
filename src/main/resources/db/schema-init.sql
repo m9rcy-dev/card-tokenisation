@@ -3,7 +3,7 @@
 --
 -- Consolidated DDL for the card-tokenisation-system database.
 -- This is the final schema state equivalent to running all Flyway migrations
--- V1 through V11 in sequence.
+-- V1 through V12 in sequence.
 --
 -- Use this file when you need a single portable init script, for example:
 --   - PostgreSQL initdb / Docker entrypoint (POSTGRES_INITDB_SCRIPTS)
@@ -27,19 +27,23 @@
 --
 -- Unified table for all key material metadata.
 -- key_type = 'KEK' rows hold an envelope key encrypted by AWS KMS.
--- key_type = 'HMAC' rows hold an HMAC secret encrypted by the active KEK.
+-- key_type = 'HMAC' rows hold an HMAC secret encrypted directly by AWS KMS CMK
+--            (purpose=hmac-key encryption context) — not wrapped under the KEK.
 --
 -- KEK rows:  kms_key_id, kms_provider, encrypted_kek_blob populated
---            encrypted_secret, encrypting_kek_id NULL
--- HMAC rows: encrypted_secret, encrypting_kek_id populated
---            kms_key_id, kms_provider, encrypted_kek_blob NULL
+--            encrypted_secret NULL
+-- HMAC rows: kms_key_id, kms_provider, encrypted_secret populated
+--            encrypted_kek_blob NULL
+--
+-- Both row types populate kms_key_id and kms_provider — they both use the
+-- same CMK, with distinct encryption contexts to prevent cross-use.
 -- ---------------------------------------------------------------------------
 CREATE TABLE key_versions (
     id                 UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-    kms_key_id         VARCHAR(255),                    -- ARN or alias; NULL for HMAC rows
-    kms_provider       VARCHAR(50),                     -- 'AWS_KMS' | 'LOCAL_DEV'; NULL for HMAC rows
+    kms_key_id         VARCHAR(255),                    -- ARN or alias; populated for both KEK and HMAC rows
+    kms_provider       VARCHAR(50),                     -- 'AWS_KMS' | 'LOCAL_DEV'; populated for both row types
     key_alias          VARCHAR(100)  NOT NULL,
-    encrypted_kek_blob TEXT,                            -- Base64(KMS.Encrypt(kek_bytes)); NULL for HMAC rows
+    encrypted_kek_blob TEXT,                            -- Base64(KMS.Encrypt(kek_bytes, ctx=kek-unwrap)); NULL for HMAC rows
     key_type           VARCHAR(10)   NOT NULL DEFAULT 'KEK'
                            CHECK (key_type IN ('KEK', 'HMAC')),
     status             VARCHAR(20)   NOT NULL DEFAULT 'ACTIVE'
@@ -53,8 +57,7 @@ CREATE TABLE key_versions (
     created_by         VARCHAR(100)  NOT NULL,
 
     -- HMAC-only columns
-    encrypted_secret   BYTEA,                           -- AES-GCM(hmac_bytes, kek); NULL for KEK rows
-    encrypting_kek_id  UUID          REFERENCES key_versions(id)  -- which KEK encrypted this secret
+    encrypted_secret   BYTEA                            -- KMS.Encrypt(hmac_bytes, ctx=hmac-key); NULL for KEK rows
 );
 
 -- One ACTIVE row per key_type — prevents two concurrent ACTIVE KEKs or two ACTIVE HMACs
@@ -110,13 +113,13 @@ CREATE INDEX idx_token_vault_key_version_active
     ON token_vault(key_version_id) WHERE is_active = TRUE;
 
 -- NOTE: idx_token_vault_hmac_version_active is intentionally omitted here.
--- It is created by a DBA immediately before triggering an HMAC rotation
--- (see docs/aws-kek-hmac-simplified.md §HMAC rotation):
+-- Create it immediately before triggering an HMAC rotation (see §4 of key-rotation-runbook.md):
 --
 --   CREATE INDEX CONCURRENTLY idx_token_vault_hmac_version_active
 --       ON token_vault(hmac_key_version_id) WHERE is_active = TRUE;
 --
--- Keeping it absent avoids ~20% extra WAL write volume during KEK rotation batches.
+-- Keeping it absent avoids ~20% extra WAL write volume during KEK rotation batches
+-- (every rotation UPDATE forces index maintenance even though hmac_key_version_id is unchanged).
 
 -- ---------------------------------------------------------------------------
 -- Table: token_audit_log

@@ -3,9 +3,7 @@ package com.yourorg.tokenisation.rotation;
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
-import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
@@ -15,8 +13,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.Arrays;
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -35,7 +31,6 @@ public class RotationJob {
     private final KeyVersionRepository keyVersionRepository;
     private final TokenVaultRepository tokenVaultRepository;
     private final InMemoryKekKeyRing keyRing;
-    private final AesGcmCipher cipher;
     private final AuditLogger auditLogger;
     private final RotationProperties rotationProperties;
 
@@ -43,14 +38,12 @@ public class RotationJob {
                        KeyVersionRepository keyVersionRepository,
                        TokenVaultRepository tokenVaultRepository,
                        InMemoryKekKeyRing keyRing,
-                       AesGcmCipher cipher,
                        AuditLogger auditLogger,
                        RotationProperties rotationProperties) {
         this.batchProcessor = batchProcessor;
         this.keyVersionRepository = keyVersionRepository;
         this.tokenVaultRepository = tokenVaultRepository;
         this.keyRing = keyRing;
-        this.cipher = cipher;
         this.auditLogger = auditLogger;
         this.rotationProperties = rotationProperties;
     }
@@ -89,7 +82,7 @@ public class RotationJob {
         long remaining = tokenVaultRepository.countActiveByKeyVersionId(oldKeyVersionId);
         if (remaining == 0) {
             log.info("All tokens migrated from key [{}] — initiating cutover", oldKeyVersionId);
-            completeRotation(rotatingKey, activeOpt.get());
+            completeRotation(rotatingKey);
         } else {
             log.info("Rotation in progress: {} token(s) remaining on old key [{}]", remaining, oldKeyVersionId);
         }
@@ -130,7 +123,7 @@ public class RotationJob {
     }
 
     @Transactional
-    public void completeRotation(KeyVersion rotatingKey, KeyVersion newKek) {
+    public void completeRotation(KeyVersion rotatingKey) {
         UUID oldKeyVersionId = rotatingKey.getId();
 
         long remainingDoubleCheck = tokenVaultRepository.countActiveByKeyVersionId(oldKeyVersionId);
@@ -139,10 +132,6 @@ public class RotationJob {
                     remainingDoubleCheck, oldKeyVersionId);
             return;
         }
-
-        // Re-wrap any HMAC secrets still encrypted under the retiring KEK so they remain
-        // loadable at next startup (the RETIRED KEK is not loaded into the ring).
-        rewrapHmacSecrets(oldKeyVersionId, newKek);
 
         rotatingKey.markRetired(Instant.now());
         keyVersionRepository.save(rotatingKey);
@@ -157,45 +146,5 @@ public class RotationJob {
                 null);
 
         log.info("Key rotation complete: key [{}] retired successfully", oldKeyVersionId);
-    }
-
-    /**
-     * Re-encrypts the {@code encrypted_secret} of any HMAC key versions that were wrapped
-     * under the retiring KEK, binding them to the new KEK instead.
-     *
-     * <p>Both KEKs are already in the in-memory ring (old one is still ROTATING at this point,
-     * not yet RETIRED). This is a purely in-memory operation — no KMS call is made.
-     * The HMAC table is tiny (single-digit rows), so this runs synchronously.
-     */
-    private void rewrapHmacSecrets(UUID oldKekVersionId, KeyVersion newKek) {
-        List<KeyVersion> hmacRows = keyVersionRepository.findHmacByEncryptingKekId(oldKekVersionId);
-        if (hmacRows.isEmpty()) {
-            return;
-        }
-        log.info("Re-wrapping {} HMAC secret(s) from KEK [{}] → [{}]",
-                hmacRows.size(), oldKekVersionId, newKek.getId());
-
-        KeyMaterial oldKekMaterial = keyRing.getByVersion(oldKekVersionId.toString());
-        KeyMaterial newKekMaterial = keyRing.getByVersion(newKek.getId().toString());
-
-        byte[] oldKek = oldKekMaterial.copyKek();
-        byte[] newKek2 = newKekMaterial.copyKek();
-        try {
-            for (KeyVersion hmac : hmacRows) {
-                byte[] secret = null;
-                try {
-                    secret = cipher.decryptBytes(hmac.getEncryptedSecret(), oldKek);
-                    byte[] rewrapped = cipher.encryptBytes(secret, newKek2);
-                    hmac.rewrapSecret(rewrapped, newKek.getId());
-                    keyVersionRepository.save(hmac);
-                    log.debug("HMAC key [{}] re-wrapped under new KEK [{}]", hmac.getId(), newKek.getId());
-                } finally {
-                    if (secret != null) Arrays.fill(secret, (byte) 0);
-                }
-            }
-        } finally {
-            Arrays.fill(oldKek,  (byte) 0);
-            Arrays.fill(newKek2, (byte) 0);
-        }
     }
 }

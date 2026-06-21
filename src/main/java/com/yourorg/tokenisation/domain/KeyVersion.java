@@ -21,8 +21,8 @@ import java.util.UUID;
  *
  * <p>A single table holds both KEK and HMAC key versions, discriminated by {@code key_type}.
  * KEK rows hold KMS-related fields ({@code kms_key_id}, {@code encrypted_kek_blob}, etc.)
- * and leave HMAC fields null. HMAC rows hold {@code encrypted_secret} and
- * {@code encrypting_kek_id} and leave KMS fields null.
+ * and leave HMAC fields null. HMAC rows hold {@code encrypted_secret} (KMS ciphertext
+ * protected directly by the CMK with {@code purpose=hmac-key} context) and leave KEK fields null.
  *
  * <p>Rows are intentionally immutable after creation — the only permitted mutations are
  * {@code status}, {@code rotation_reason}, and {@code retired_at}, controlled through
@@ -44,11 +44,11 @@ public class KeyVersion {
     @Column(name = "key_type", nullable = false)
     private KeyType keyType;
 
-    /** KMS-internal key identifier (e.g. AWS KMS ARN). Null for HMAC rows. */
+    /** KMS-internal key identifier (e.g. AWS KMS ARN). Populated for both KEK and HMAC rows. */
     @Column(name = "kms_key_id")
     private String kmsKeyId;
 
-    /** KMS provider name (e.g. {@code AWS_KMS} or {@code LOCAL_DEV}). Null for HMAC rows. */
+    /** KMS provider name (e.g. {@code AWS_KMS} or {@code LOCAL_DEV}). Populated for both KEK and HMAC rows. */
     @Column(name = "kms_provider")
     private String kmsProvider;
 
@@ -61,18 +61,11 @@ public class KeyVersion {
     private String encryptedKekBlob;
 
     /**
-     * IV-prefixed AES-GCM blob of the HMAC secret, wrapped under {@code encrypting_kek_id}.
-     * Null for KEK rows.
+     * KMS ciphertext of the HMAC secret, protected directly by the CMK with
+     * {@code purpose=hmac-key} encryption context. Null for KEK rows.
      */
     @Column(name = "encrypted_secret")
     private byte[] encryptedSecret;
-
-    /**
-     * UUID of the KEK version that encrypted {@code encrypted_secret}.
-     * Self-referential FK on {@code key_versions.id}. Null for KEK rows.
-     */
-    @Column(name = "encrypting_kek_id")
-    private UUID encryptingKekId;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
@@ -102,7 +95,6 @@ public class KeyVersion {
             String keyAlias,
             String encryptedKekBlob,
             byte[] encryptedSecret,
-            UUID encryptingKekId,
             KeyStatus status,
             RotationReason rotationReason,
             Instant activatedAt,
@@ -114,7 +106,6 @@ public class KeyVersion {
         this.keyAlias = keyAlias;
         this.encryptedKekBlob = encryptedKekBlob;
         this.encryptedSecret = encryptedSecret != null ? encryptedSecret.clone() : null;
-        this.encryptingKekId = encryptingKekId;
         this.status = status;
         this.rotationReason = rotationReason;
         this.activatedAt = activatedAt;
@@ -124,15 +115,17 @@ public class KeyVersion {
 
     /** Factory method for HMAC key version rows. */
     public static KeyVersion forHmac(byte[] encryptedSecret,
-                                     UUID encryptingKekId,
+                                     String kmsKeyId,
+                                     String kmsProvider,
                                      String keyAlias,
                                      Instant rotateBy,
                                      String createdBy) {
         return KeyVersion.builder()
                 .keyType(KeyType.HMAC)
+                .kmsKeyId(kmsKeyId)
+                .kmsProvider(kmsProvider)
                 .keyAlias(keyAlias)
                 .encryptedSecret(encryptedSecret)
-                .encryptingKekId(encryptingKekId)
                 .status(KeyStatus.ACTIVE)
                 .activatedAt(Instant.now())
                 .rotateBy(rotateBy)
@@ -159,12 +152,4 @@ public class KeyVersion {
         this.retiredAt = compromisedAt;
     }
 
-    /**
-     * Replaces the encrypted HMAC secret with a blob re-encrypted under a new KEK.
-     * Called by {@code RotationJob.rewrapHmacSecrets} before the old KEK is retired.
-     */
-    public void rewrapSecret(byte[] newEncryptedSecret, UUID newEncryptingKekId) {
-        this.encryptedSecret  = newEncryptedSecret.clone();
-        this.encryptingKekId  = newEncryptingKekId;
-    }
 }

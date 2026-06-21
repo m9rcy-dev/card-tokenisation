@@ -10,6 +10,7 @@ Replaces raw PANs (Primary Account Numbers) with opaque, irreversible tokens. Su
 
 - [Quick Start](#quick-start)
   - [Running locally (terminal)](#running-locally-terminal)
+  - [Running with LocalStack from terminal](#running-with-localstack-from-terminal-no-ide-needed)
   - [Running from an IDE](#running-from-an-ide)
   - [Running with real AWS KMS](#running-with-real-aws-kms)
 - [API Reference](#api-reference)
@@ -54,6 +55,53 @@ To stop: `Ctrl+C` to kill the app, then `make stop-postgres` to remove the conta
 
 ---
 
+### Running with LocalStack from terminal (no IDE needed)
+
+Use this when you want to test the full AWS KMS code path (real `kms:Encrypt`/`kms:Decrypt` calls, `EncryptionContext` enforcement, CloudTrail-style audit) from the terminal — no IDE required.
+
+#### Option 1 — Single command (recommended)
+
+One command starts PostgreSQL, LocalStack, creates the KMS key, and boots the app:
+
+```bash
+make localstack-full
+```
+
+The app starts on port 8080 pointed at LocalStack KMS. When you're done:
+
+```bash
+Ctrl+C                  # stop the Spring Boot app
+make stop-localstack    # tear down Postgres and LocalStack containers
+```
+
+#### Option 2 — Two-step (useful when you want to inspect LocalStack before starting the app)
+
+```bash
+# Step 1: start infrastructure (Postgres + LocalStack + KMS key creation)
+make start-localstack
+```
+
+This prints the key ARN when the init hook completes:
+```
+LocalStack KMS ready. Key ARN: arn:aws:kms:ap-southeast-2:000000000000:key/<uuid>
+```
+
+```bash
+# Step 2: start the Spring Boot app (ARN is read automatically from LocalStack)
+make run-localstack
+```
+
+`run-localstack` reads the ARN directly from the LocalStack container — no copy-paste required.
+
+To tear down:
+```bash
+make stop-localstack    # stops and removes both Postgres and LocalStack
+```
+
+> **Note:** the KMS key ARN changes every time the LocalStack container is recreated. `make run-localstack` and `make localstack-full` always read the current ARN automatically. If you run the app from your IDE instead, see Option B below for how to copy the ARN.
+
+---
+
 ### Running from an IDE
 
 Use this when you want to attach a debugger or set breakpoints. Two KMS options are available.
@@ -75,12 +123,13 @@ Flyway migrations run automatically when the Spring Boot app starts.
 DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
 DATASOURCE_USER=tokenisation_app
 DATASOURCE_PASSWORD=local-dev-password
-PAN_HASH_SECRET=local-dev-pan-hash-secret-32bytes!
 KMS_PROVIDER=local-dev
 KMS_LOCAL_DEV_KEK_HEX=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
 HIKARI_MAX_POOL_SIZE=60
 VIRTUAL_THREADS_ENABLED=true
 ```
+
+> `PAN_HASH_SECRET` is no longer required — the HMAC secret is seeded automatically by `LocalDevHmacKeySeeder` at startup.
 
 **Step 3:** Run the `TokenisationApplication` main class from your IDE.
 
@@ -88,11 +137,11 @@ VIRTUAL_THREADS_ENABLED=true
 
 ---
 
-#### Option B — LocalStack KMS (real AWS KMS API, local)
+#### Option B — LocalStack KMS (real AWS KMS API, local) via IDE
 
-Uses LocalStack to simulate AWS KMS. Use this when you need to test the full AWS KMS code path (key wrapping, `EncryptionContext`, IAM-style auth) without a real AWS account.
+> **Prefer the terminal?** Use `make localstack-full` instead — it handles the ARN automatically and requires no IDE setup. See [Running with LocalStack from terminal](#running-with-localstack-from-terminal-no-ide-needed) above.
 
-**Step 1:** Start PostgreSQL and LocalStack, create the KMS key:
+**Step 1:** Start PostgreSQL, LocalStack, and create the KMS key:
 ```bash
 make start-localstack
 ```
@@ -119,12 +168,12 @@ KMS_AWS_ENDPOINT_OVERRIDE=http://localhost:4566
 DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
 DATASOURCE_USER=tokenisation_app
 DATASOURCE_PASSWORD=local-dev-password
-PAN_HASH_SECRET=local-dev-pan-hash-secret-32bytes!
 HIKARI_MAX_POOL_SIZE=60
 VIRTUAL_THREADS_ENABLED=true
 ```
 
 > `AWS_REGION` is not required — the `localstack` profile defaults it to `ap-southeast-2`.
+> `PAN_HASH_SECRET` is no longer required — HMAC secrets are seeded via KMS directly at startup.
 
 **Step 3:** Run the `TokenisationApplication` main class from your IDE.
 
@@ -133,7 +182,7 @@ VIRTUAL_THREADS_ENABLED=true
 make stop-localstack   # stops and removes both Postgres and LocalStack containers
 ```
 
-> **Note:** the KMS key ARN changes every time you recreate the LocalStack container. Update `AWS_KMS_KEY_ARN` in your run config after each `make stop-localstack && make start-localstack`.
+> **Note:** the KMS key ARN changes every time you recreate the LocalStack container. Update `AWS_KMS_KEY_ARN` in your IDE run config after each `make stop-localstack && make start-localstack`. If using the terminal (`make localstack-full` or `make run-localstack`), the ARN is read automatically — no update needed.
 
 ---
 
@@ -151,7 +200,6 @@ AWS_SECRET_ACCESS_KEY=<your-secret-key>
 DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
 DATASOURCE_USER=tokenisation_app
 DATASOURCE_PASSWORD=local-dev-password
-PAN_HASH_SECRET=local-dev-pan-hash-secret-32bytes!
 KMS_AWS_SEED_ON_STARTUP=true
 HIKARI_MAX_POOL_SIZE=60
 VIRTUAL_THREADS_ENABLED=true
@@ -300,11 +348,12 @@ All configuration is in `src/main/resources/application.yml`. Sensitive values a
 | `DATASOURCE_URL` | PostgreSQL JDBC URL | Yes |
 | `DATASOURCE_USER` | DB username (use `tokenisation_app` in prod) | Yes |
 | `DATASOURCE_PASSWORD` | DB password | Yes |
-| `PAN_HASH_SECRET` | HMAC-SHA256 secret for PAN deduplication | Yes |
-| `TAMPER_DETECTION_SECRET` | HMAC-SHA256 secret for key_versions row integrity | Yes |
 | `KMS_PROVIDER` | `aws` or `local-dev` | Yes |
+| `KMS_LOCAL_DEV_KEK_HEX` | 32-byte hex KEK for local-dev mode | local-dev only |
 | `AWS_REGION` | AWS region (when `KMS_PROVIDER=aws`) | AWS only |
 | `AWS_KMS_KEY_ARN` | CMK ARN (when `KMS_PROVIDER=aws`) | AWS only |
+| `KMS_AWS_SEED_ON_STARTUP` | Set `true` to auto-seed KEK+HMAC rows on first boot | AWS only (dev) |
+| `KMS_AWS_ENDPOINT_OVERRIDE` | Override KMS endpoint (e.g. `http://localhost:4566` for LocalStack) | LocalStack only |
 
 ### Key application.yml settings
 

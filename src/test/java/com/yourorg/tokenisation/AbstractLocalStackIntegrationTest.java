@@ -1,6 +1,5 @@
 package com.yourorg.tokenisation;
 
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.kms.KmsProvider;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -116,8 +115,8 @@ public abstract class AbstractLocalStackIntegrationTest {
      *
      * <p>The KEK plaintext is generated locally and encrypted via LocalStack KMS using the
      * {@code purpose=kek-unwrap} context (matching {@link com.yourorg.tokenisation.kms.AwsKmsAdapter#unwrapKek}).
-     * The HMAC secret is encrypted at application level under the KEK using AES-256-GCM
-     * (matching how {@link com.yourorg.tokenisation.kms.LocalDevHmacKeySeeder} works).
+     * The HMAC secret is encrypted directly via LocalStack KMS using the {@code purpose=hmac-key}
+     * context (matching {@link com.yourorg.tokenisation.kms.AwsKmsAdapter#wrapNewHmacKey}).
      *
      * <p>Both insertions are idempotent — the runner checks for existing rows by alias
      * and skips if already present (safe for repeated context loads within the same JVM).
@@ -129,8 +128,7 @@ public abstract class AbstractLocalStackIntegrationTest {
         @Order(Ordered.HIGHEST_PRECEDENCE)
         public ApplicationRunner localStackSeeder(
                 KmsProvider kmsProvider,
-                JdbcTemplate jdbc,
-                AesGcmCipher cipher) {
+                JdbcTemplate jdbc) {
             return args -> {
                 Boolean hasKek = jdbc.queryForObject(
                         "SELECT EXISTS(SELECT 1 FROM key_versions WHERE key_type='KEK' AND key_alias=?)",
@@ -139,39 +137,40 @@ public abstract class AbstractLocalStackIntegrationTest {
 
                 SecureRandom rng = new SecureRandom();
 
-                // 1. Generate KEK bytes, wrap via KmsProvider (AwsKmsAdapter → LocalStack KMS.Encrypt),
-                //    then immediately encrypt the HMAC secret under the same bytes before zeroing.
+                // Wrap KEK via LocalStack KMS (purpose=kek-unwrap)
                 byte[] kekBytes = new byte[32];
                 rng.nextBytes(kekBytes);
+                String b64KekBlob;
+                try {
+                    b64KekBlob = kmsProvider.wrapNewKek(kekBytes);
+                } finally {
+                    Arrays.fill(kekBytes, (byte) 0);
+                }
+
+                // Wrap HMAC secret directly via LocalStack KMS (purpose=hmac-key) — no KEK involvement
                 byte[] hmacBytes = new byte[32];
                 rng.nextBytes(hmacBytes);
-                String b64KekBlob;
                 byte[] encryptedSecret;
                 try {
-                    b64KekBlob     = kmsProvider.wrapNewKek(kekBytes);
-                    encryptedSecret = cipher.encryptBytes(hmacBytes, kekBytes);
+                    encryptedSecret = kmsProvider.wrapNewHmacKey(hmacBytes);
                 } finally {
-                    Arrays.fill(kekBytes,  (byte) 0);
                     Arrays.fill(hmacBytes, (byte) 0);
                 }
 
                 Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 3600));
-                String kekId = jdbc.queryForObject("""
+                jdbc.update("""
                         INSERT INTO key_versions (kms_key_id, kms_provider, key_alias,
                             encrypted_kek_blob, key_type, status, activated_at, rotate_by, created_by)
                         VALUES ('localstack', 'AWS_KMS', ?, ?, 'KEK', 'ACTIVE', now(), ?, ?)
-                        RETURNING id::text
                         """,
-                        String.class,
                         SEED_KEK_ALIAS, b64KekBlob, rotateBy, "localstack-seeder");
 
                 jdbc.update("""
                         INSERT INTO key_versions (kms_key_id, kms_provider, key_alias,
-                            encrypted_secret, encrypting_kek_id,
-                            key_type, status, activated_at, rotate_by, created_by)
-                        VALUES (NULL, NULL, ?, ?, ?::uuid, 'HMAC', 'ACTIVE', now(), ?, ?)
+                            encrypted_secret, key_type, status, activated_at, rotate_by, created_by)
+                        VALUES (?, 'AWS_KMS', ?, ?, 'HMAC', 'ACTIVE', now(), ?, ?)
                         """,
-                        SEED_HMAC_ALIAS, encryptedSecret, kekId, rotateBy, "localstack-seeder");
+                        KMS_KEY_ARN, SEED_HMAC_ALIAS, encryptedSecret, rotateBy, "localstack-seeder");
             };
         }
     }

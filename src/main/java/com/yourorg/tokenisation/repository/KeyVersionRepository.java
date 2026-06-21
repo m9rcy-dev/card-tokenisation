@@ -113,10 +113,4 @@ public interface KeyVersionRepository extends JpaRepository<KeyVersion, UUID> {
     @Query("SELECT kv FROM KeyVersion kv WHERE kv.keyType = 'KEK' AND kv.status = 'ROTATING' ORDER BY kv.activatedAt ASC")
     Optional<KeyVersion> findOldestRotating();
 
-    /**
-     * Finds all HMAC versions whose {@code encrypted_secret} was wrapped under the given KEK version.
-     * Used by {@code RotationJob.completeRotation} to re-wrap HMAC secrets before the old KEK is retired.
-     */
-    @Query("SELECT kv FROM KeyVersion kv WHERE kv.keyType = 'HMAC' AND kv.encryptingKekId = :kekVersionId")
-    List<KeyVersion> findHmacByEncryptingKekId(@Param("kekVersionId") UUID kekVersionId);
 }

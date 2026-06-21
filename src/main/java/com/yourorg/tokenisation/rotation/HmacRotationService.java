@@ -2,11 +2,9 @@ package com.yourorg.tokenisation.rotation;
 
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.InMemoryHmacKeyRing;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
-import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyVersion;
+import com.yourorg.tokenisation.kms.KmsProvider;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -24,8 +22,9 @@ import java.util.UUID;
  * <h3>Rotation flow</h3>
  * <ol>
  *   <li>{@link #initiateRotation} — marks current ACTIVE HMAC version as ROTATING, generates a
- *       fresh 32-byte secret, encrypts it under the active KEK, persists a new ACTIVE HMAC version,
- *       and promotes it in the in-memory ring.  New tokenisations immediately use the new secret.
+ *       fresh 32-byte secret, encrypts it directly under the KMS CMK ({@code purpose=hmac-key}),
+ *       persists a new ACTIVE HMAC version, and promotes it in the in-memory ring.
+ *       New tokenisations immediately use the new secret. The KEK is not involved.
  *   <li>{@code HmacRotationJob} — driven by cron, calls {@code PanHashBatchProcessor} to re-hash
  *       all vault records still on the rotating version.
  *   <li>{@link #completeRotation} — called by {@code HmacRotationJob} once all records are
@@ -44,20 +43,17 @@ public class HmacRotationService {
     private static final int ROTATE_BY_DAYS = 365;
 
     private final KeyVersionRepository keyVersionRepository;
-    private final InMemoryKekKeyRing keyRing;
+    private final KmsProvider kmsProvider;
     private final InMemoryHmacKeyRing hmacKeyRing;
-    private final AesGcmCipher cipher;
     private final AuditLogger auditLogger;
 
     public HmacRotationService(KeyVersionRepository keyVersionRepository,
-                                InMemoryKekKeyRing keyRing,
+                                KmsProvider kmsProvider,
                                 InMemoryHmacKeyRing hmacKeyRing,
-                                AesGcmCipher cipher,
                                 AuditLogger auditLogger) {
         this.keyVersionRepository = keyVersionRepository;
-        this.keyRing = keyRing;
+        this.kmsProvider = kmsProvider;
         this.hmacKeyRing = hmacKeyRing;
-        this.cipher = cipher;
         this.auditLogger = auditLogger;
     }
 
@@ -70,7 +66,7 @@ public class HmacRotationService {
      *
      * @param newKeyAlias human-readable alias for the new key version; must not be blank
      * @return the UUID of the newly created ACTIVE HMAC version
-     * @throws IllegalStateException if no ACTIVE HMAC version exists or no ACTIVE KEK exists
+     * @throws IllegalStateException if no ACTIVE HMAC version exists
      */
     @Transactional
     public UUID initiateRotation(String newKeyAlias) {
@@ -81,23 +77,21 @@ public class HmacRotationService {
         keyVersionRepository.save(activeHmac);
         keyVersionRepository.flush();
 
-        // 2. Generate new secret and encrypt under active KEK
-        KeyMaterial activeKekMaterial = keyRing.getActive();
-        byte[] kek = activeKekMaterial.copyKek();
+        // 2. Generate new secret and encrypt directly via KMS (purpose=hmac-key)
         byte[] newSecret = new byte[HMAC_SECRET_LENGTH_BYTES];
         new SecureRandom().nextBytes(newSecret);
         byte[] encryptedSecret;
         try {
-            encryptedSecret = cipher.encryptBytes(newSecret, kek);
+            encryptedSecret = kmsProvider.wrapNewHmacKey(newSecret);
         } finally {
-            Arrays.fill(kek, (byte) 0);
+            // newSecret zeroed after ring.load() below — must survive until then
         }
 
-        // 3. Persist new HMAC version (ACTIVE)
-        KeyVersion activeKek = keyVersionRepository.findActiveKekOrThrow();
+        // 3. Persist new HMAC version (ACTIVE) — carry forward kmsKeyId/kmsProvider from the active row
         Instant rotateBy = Instant.now().plus(ROTATE_BY_DAYS, ChronoUnit.DAYS);
         KeyVersion newHmacVersion = KeyVersion.forHmac(
-                encryptedSecret, activeKek.getId(), newKeyAlias, rotateBy, "hmac-rotation-service");
+                encryptedSecret, activeHmac.getKmsKeyId(), activeHmac.getKmsProvider(),
+                newKeyAlias, rotateBy, "hmac-rotation-service");
         keyVersionRepository.saveAndFlush(newHmacVersion);
         String newVersionId = newHmacVersion.getId().toString();
 

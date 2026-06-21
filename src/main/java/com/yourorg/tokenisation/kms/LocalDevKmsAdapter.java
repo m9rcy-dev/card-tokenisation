@@ -169,6 +169,49 @@ public class LocalDevKmsAdapter implements KmsProvider {
     }
 
     /**
+     * Encrypts an HMAC secret using AES-256-GCM with the local fixed KEK.
+     *
+     * <p>Format of the returned blob: {@code [12-byte IV][GCM ciphertext including 16-byte tag]}.
+     * No length restriction — any-length plaintext is accepted.
+     *
+     * @param plaintextHmacKey the HMAC secret bytes to protect; must not be null
+     * @return IV-prefixed GCM ciphertext of the HMAC secret
+     * @throws KmsOperationException if the AES-GCM operation fails
+     */
+    @Override
+    public byte[] wrapNewHmacKey(byte[] plaintextHmacKey) {
+        if (plaintextHmacKey == null) {
+            throw new IllegalArgumentException("plaintextHmacKey must not be null");
+        }
+        try {
+            byte[] iv = generateIv();
+            SecretKey kekKey = new SecretKeySpec(localKek, "AES");
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
+            Cipher cipher = Cipher.getInstance(AES_GCM_ALGORITHM);
+            cipher.init(Cipher.ENCRYPT_MODE, kekKey, gcmSpec);
+            byte[] ciphertext = cipher.doFinal(plaintextHmacKey);
+            return prependIv(iv, ciphertext);
+        } catch (Exception e) {
+            throw new KmsOperationException("Failed to wrap HMAC key in local-dev mode", e);
+        }
+    }
+
+    /**
+     * Decrypts an IV-prefixed AES-256-GCM HMAC secret blob using the local fixed KEK.
+     *
+     * @param encryptedHmacBlob IV-prefixed GCM ciphertext; first 12 bytes are the IV; must not be null
+     * @return plaintext HMAC secret bytes; caller must zero after use
+     * @throws KmsOperationException if decryption fails
+     */
+    @Override
+    public byte[] unwrapHmacKey(byte[] encryptedHmacBlob) {
+        if (encryptedHmacBlob == null) {
+            throw new IllegalArgumentException("encryptedHmacBlob must not be null");
+        }
+        return unwrapDekInternal(encryptedHmacBlob);
+    }
+
+    /**
      * Returns stub metadata for the local dev key.
      *
      * <p>No real KMS is available in the local-dev profile, so this returns a synthetic

@@ -57,9 +57,6 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     private InMemoryHmacKeyRing hmacKeyRing;
 
     @Autowired
-    private AesGcmCipher cipher;
-
-    @Autowired
     private JdbcTemplate jdbcTemplate;
 
     @BeforeEach
@@ -168,7 +165,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
      * @return a configured but not yet executed initialiser
      */
     private KeyRingInitialiser buildInitialiser() {
-        return new KeyRingInitialiser(kmsProvider, keyVersionRepository, keyRing, hmacKeyRing, cipher);
+        return new KeyRingInitialiser(kmsProvider, keyVersionRepository, keyRing, hmacKeyRing);
     }
 
     /**

@@ -77,7 +77,7 @@ LOCALSTACK_KEY_ALIAS := alias/card-tokenisation-kek
 
 .PHONY: help build test load-test localstack-test results \
         start stop-postgres start-postgres db-migrate \
-        start-localstack stop-localstack run-localstack \
+        start-localstack stop-localstack run-localstack localstack-full \
         clean gradle-wrapper bruno-run bruno-run-admin gatling-test
 
 ## help: show this message
@@ -177,6 +177,10 @@ start-localstack:
 ## stop-localstack: stop and remove Postgres + LocalStack containers and volumes
 stop-localstack:
 	docker compose -f docker-compose-localstack.yml down -v
+
+## localstack-full: start Postgres + LocalStack + Spring Boot app with one command (Ctrl+C stops app; then run make stop-localstack)
+localstack-full: start-localstack
+	$(MAKE) run-localstack
 
 ## run-localstack: start Spring Boot app against LocalStack KMS (requires: make start-localstack)
 run-localstack:

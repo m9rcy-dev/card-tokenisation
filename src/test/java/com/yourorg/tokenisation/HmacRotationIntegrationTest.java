@@ -3,7 +3,6 @@ package com.yourorg.tokenisation;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
 import com.yourorg.tokenisation.crypto.InMemoryHmacKeyRing;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
@@ -59,7 +58,6 @@ class HmacRotationIntegrationTest extends AbstractIntegrationTest {
     @Autowired private HmacRotationJob hmacRotationJob;
     @Autowired private InMemoryHmacKeyRing hmacKeyRing;
     @Autowired private KmsProvider kmsProvider;
-    @Autowired private AesGcmCipher cipher;
     @Autowired private JdbcTemplate jdbcTemplate;
 
     // Discovered dynamically per test — LocalDevHmacKeySeeder uses @GeneratedValue (random UUID)
@@ -107,16 +105,11 @@ class HmacRotationIntegrationTest extends AbstractIntegrationTest {
     private void reloadSeedHmacIntoRing(String seedIdStr) {
         KeyVersion seedHmac = keyVersionRepository.findById(UUID.fromString(seedIdStr))
                 .orElseThrow(() -> new IllegalStateException("Seed HMAC row missing: " + seedIdStr));
-        KeyVersion encryptingKek = keyVersionRepository.findById(seedHmac.getEncryptingKekId())
-                .orElseThrow(() -> new IllegalStateException(
-                        "Encrypting KEK not found: " + seedHmac.getEncryptingKekId()));
-        byte[] kek = kmsProvider.unwrapKek(encryptingKek.getEncryptedKekBlob());
         byte[] hmacSecret = null;
         try {
-            hmacSecret = cipher.decryptBytes(seedHmac.getEncryptedSecret(), kek);
+            hmacSecret = kmsProvider.unwrapHmacKey(seedHmac.getEncryptedSecret());
             hmacKeyRing.load(seedIdStr, hmacSecret, seedHmac.getRotateBy());
         } finally {
-            Arrays.fill(kek, (byte) 0);
             if (hmacSecret != null) Arrays.fill(hmacSecret, (byte) 0);
         }
     }
