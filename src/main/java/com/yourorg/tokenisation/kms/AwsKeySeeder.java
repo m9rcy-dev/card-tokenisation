@@ -7,7 +7,7 @@ import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
@@ -17,13 +17,23 @@ import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 
 /**
- * Seeds an initial ACTIVE KEK and HMAC key version on first boot when
- * {@code kms.aws.seed-on-startup=true} is set.
+ * Seeds an initial ACTIVE KEK and HMAC key version on first boot when both
+ * {@code kms.provider=aws} and {@code kms.aws.seed-on-startup=true} are set.
  *
- * <p>Activated for any environment that uses {@code kms.provider=aws} but starts
- * against a fresh (empty) database — LocalStack, real AWS KMS for local dev, or
- * an ephemeral test environment. Production deployments should pre-populate
- * {@code key_versions} via a controlled provisioning step and must NOT set this property.
+ * <p>Two guards are required:
+ * <ul>
+ *   <li>{@code kms.provider=aws} — ensures this seeder only activates when the AWS KMS
+ *       adapter is active. Without this guard, setting {@code kms.aws.seed-on-startup=true}
+ *       alongside {@code kms.provider=local-dev} would cause both the local-dev seeders and
+ *       this class to run, writing rows with {@code kms_provider='AWS_KMS'} but blobs
+ *       encrypted by {@code LocalDevKmsAdapter} — data inconsistency that breaks on next
+ *       startup when the AWS adapter tries to decrypt them.</li>
+ *   <li>{@code kms.aws.seed-on-startup=true} — explicit opt-in for dev/staging/LocalStack
+ *       environments. {@code kms.provider=aws} is used in both non-production and production
+ *       environments; production key material must come from a controlled key ceremony, not be
+ *       auto-generated on startup. Keeping this flag absent (or false) in production prevents
+ *       silent auto-seeding.</li>
+ * </ul>
  *
  * <p>Both seeds are idempotent — existing ACTIVE rows are left untouched, so
  * restarting the application against the same database is safe.
@@ -32,7 +42,7 @@ import java.util.Arrays;
  * always finds at least one ACTIVE KEK row and one ACTIVE HMAC row on startup.
  */
 @Component
-@ConditionalOnProperty(name = "kms.aws.seed-on-startup", havingValue = "true")
+@ConditionalOnExpression("'${kms.provider:}' == 'aws' && '${kms.aws.seed-on-startup:false}' == 'true'")
 @Order(1)
 @Slf4j
 public class AwsKeySeeder implements ApplicationRunner {
