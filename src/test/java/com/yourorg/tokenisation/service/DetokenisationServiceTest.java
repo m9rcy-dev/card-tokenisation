@@ -3,11 +3,7 @@ package com.yourorg.tokenisation.service;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
-import com.yourorg.tokenisation.crypto.EncryptionException;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
-import com.yourorg.tokenisation.crypto.KeyMaterial;
-import com.yourorg.tokenisation.crypto.KeyVersionNotFoundException;
+import com.yourorg.tokenisation.crypto.*;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.TokenVault;
@@ -21,9 +17,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.lang.reflect.Field;
-
 import javax.crypto.AEADBadTagException;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Optional;
@@ -32,10 +27,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for {@link DetokenisationService}.

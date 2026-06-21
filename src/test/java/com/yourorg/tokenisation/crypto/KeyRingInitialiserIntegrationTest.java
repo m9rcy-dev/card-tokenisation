@@ -2,8 +2,6 @@ package com.yourorg.tokenisation.crypto;
 
 import com.yourorg.tokenisation.AbstractIntegrationTest;
 import com.yourorg.tokenisation.domain.KeyStatus;
-
-import static com.yourorg.tokenisation.AbstractIntegrationTest.SEED_KEY_VERSION_ID;
 import com.yourorg.tokenisation.kms.KmsProvider;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -11,13 +9,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
-
-import org.springframework.dao.InvalidDataAccessApiUsageException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -91,7 +88,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void run_activeKeyVersionInDatabase_isLoadedAndPromotedAsActive() throws Exception {
+    void run_activeKeyVersionInDatabase_isLoadedAndPromotedAsActive() {
         String activeVersionId = insertKeyVersion(KeyStatus.ACTIVE, "active-key");
         KeyRingInitialiser initialiserUnderTest = buildInitialiser();
 
@@ -105,7 +102,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void run_rotatingKeyVersionInDatabase_isLoadedButActiveVersionPromoted() throws Exception {
+    void run_rotatingKeyVersionInDatabase_isLoadedButActiveVersionPromoted() {
         String activeVersionId = insertKeyVersion(KeyStatus.ACTIVE, "active-key");
         String rotatingVersionId = insertKeyVersion(KeyStatus.ROTATING, "rotating-key");
         KeyRingInitialiser initialiserUnderTest = buildInitialiser();
@@ -120,7 +117,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void run_retiredKeyVersionInDatabase_isNotLoadedIntoKeyRing() throws Exception {
+    void run_retiredKeyVersionInDatabase_isNotLoadedIntoKeyRing() {
         insertKeyVersion(KeyStatus.ACTIVE, "active-key");
         String retiredVersionId = insertKeyVersion(KeyStatus.RETIRED, "retired-key");
         KeyRingInitialiser initialiserUnderTest = buildInitialiser();
@@ -132,7 +129,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void run_kekBytesLoadedFromLocalDevAdapter_are32Bytes() throws Exception {
+    void run_kekBytesLoadedFromLocalDevAdapter_are32Bytes() {
         String activeVersionId = insertKeyVersion(KeyStatus.ACTIVE, "kek-size-test");
         KeyRingInitialiser initialiserUnderTest = buildInitialiser();
 

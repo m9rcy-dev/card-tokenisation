@@ -7,6 +7,17 @@ services:
       POSTGRES_PASSWORD: local-dev-password
     ports:
       - "5432:5432"
+    # macOS Docker Desktop virtualises disk I/O through a hypervisor VM.
+    # Without these flags every COMMIT waits for an fsync (~50-100ms on macOS vs <1ms on Linux).
+    # Under Gatling load (333+ rps) all HikariCP connections block on fsync simultaneously,
+    # the keepalive test times out, and the entire pool is evicted (total=0, waiting=N).
+    command: >
+      postgres
+        -c max_connections=200
+        -c synchronous_commit=off
+        -c fsync=off
+        -c full_page_writes=off
+    shm_size: 256m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tokenisation_app -d tokenisation"]
       interval: 5s

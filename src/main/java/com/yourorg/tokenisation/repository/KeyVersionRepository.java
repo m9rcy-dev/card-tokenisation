@@ -1,7 +1,6 @@
 package com.yourorg.tokenisation.repository;
 
 import com.yourorg.tokenisation.domain.KeyStatus;
-import com.yourorg.tokenisation.domain.KeyType;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;

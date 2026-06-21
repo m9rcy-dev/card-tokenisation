@@ -22,16 +22,6 @@ import java.net.URI;
 public class KmsConfig {
 
     /**
-     * Creates an AWS KMS client configured for the specified region.
-     *
-     * <p>Credentials are resolved from the default AWS credential provider chain:
-     * environment variables → system properties → IAM role (EC2/ECS/Lambda).
-     * Access keys must never be hardcoded.
-     *
-     * @param awsRegion the AWS region where the KMS key resides; from {@code kms.aws.region}
-     * @return a configured {@link KmsClient} ready for KMS API calls
-     */
-    /**
      * Creates an AWS KMS client. When {@code kms.aws.endpoint-override} is set the client
      * points to that URL instead of real AWS — used for LocalStack in local/CI environments.
      *

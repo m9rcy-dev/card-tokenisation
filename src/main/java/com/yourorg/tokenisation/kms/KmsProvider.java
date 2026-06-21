@@ -17,8 +17,8 @@ package com.yourorg.tokenisation.kms;
  * <p>KMS calls are intentionally minimised:
  * <ul>
  *   <li>{@link #unwrapKek} is called once per key version at startup only
- *   <li>{@link #generateDek} is not called — DEKs are generated locally using {@code SecureRandom}
- *       and wrapped in-process using the in-memory KEK
+ *   <li>DEKs are not generated via KMS — they are generated locally using {@code SecureRandom}
+ *       and wrapped in-process using {@link #wrapDek} with the in-memory KEK
  *   <li>{@link #rewrapDek} is called only during key rotation, not during normal tokenisation
  * </ul>
  */

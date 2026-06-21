@@ -100,6 +100,7 @@ public class HmacRotationService {
             hmacKeyRing.load(newVersionId, newSecret, rotateBy);
         } finally {
             Arrays.fill(newSecret, (byte) 0);
+            Arrays.fill(encryptedSecret, (byte) 0);
         }
         hmacKeyRing.promoteActive(newVersionId);
 

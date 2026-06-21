@@ -11,7 +11,6 @@ import software.amazon.awssdk.services.kms.model.DescribeKeyRequest;
 import software.amazon.awssdk.services.kms.model.EncryptRequest;
 import software.amazon.awssdk.services.kms.model.KmsException;
 
-import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Map;
