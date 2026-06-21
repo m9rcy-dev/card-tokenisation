@@ -80,36 +80,4 @@ public interface KeyVersionRepository extends JpaRepository<KeyVersion, UUID> {
                 new IllegalStateException("No ACTIVE HMAC key version found in key_versions table"));
     }
 
-    // ── Legacy compatibility ──────────────────────────────────────────────────
-
-    /**
-     * Finds the oldest key version requiring migration regardless of type.
-     *
-     * @deprecated Use {@link #findOldestPendingMigration()} for KEK rotation.
-     *             HMAC rotation uses its own batch job.
-     */
-    @Deprecated
-    @Query("""
-            SELECT kv FROM KeyVersion kv
-            WHERE kv.status IN ('ROTATING', 'COMPROMISED')
-            ORDER BY kv.activatedAt ASC
-            """)
-    Optional<KeyVersion> findOldestPendingMigrationAny();
-
-    /** Finds all KEK or HMAC versions with the given status set (general-purpose). */
-    @Query("SELECT kv FROM KeyVersion kv WHERE kv.status IN :statuses ORDER BY kv.activatedAt ASC")
-    List<KeyVersion> findByStatusIn(@Param("statuses") List<KeyStatus> statuses);
-
-    /** Returns the single ACTIVE key (any type). Used by legacy callers during migration window. */
-    @Query("SELECT kv FROM KeyVersion kv WHERE kv.status = 'ACTIVE' AND kv.keyType = 'KEK'")
-    Optional<KeyVersion> findActive();
-
-    default KeyVersion findActiveOrThrow() {
-        return findActiveKekOrThrow();
-    }
-
-    /** Finds the oldest ROTATING KEK (legacy RotationJob helper). */
-    @Query("SELECT kv FROM KeyVersion kv WHERE kv.keyType = 'KEK' AND kv.status = 'ROTATING' ORDER BY kv.activatedAt ASC")
-    Optional<KeyVersion> findOldestRotating();
-
 }

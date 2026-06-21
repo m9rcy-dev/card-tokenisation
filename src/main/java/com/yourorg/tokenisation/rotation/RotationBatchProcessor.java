@@ -238,22 +238,18 @@ public class RotationBatchProcessor {
 
             // Rewrap DEK under new KEK — in-memory AES-GCM, no KMS call
             byte[] newEncryptedDek = cipher.wrapDek(plaintextDek, newKek);
-            try {
-                vault.reencryptDek(newEncryptedDek, newKeyVersion);
-                tokenVaultRepository.save(vault);
+            vault.reencryptDek(newEncryptedDek, newKeyVersion);
+            tokenVaultRepository.save(vault);
 
-                auditLogger.logSuccess(
-                        AuditEventType.TOKEN_REENCRYPTED,
-                        vault.getTokenId(),
-                        null,
-                        null,
-                        null);
+            auditLogger.logSuccess(
+                    AuditEventType.TOKEN_REENCRYPTED,
+                    vault.getTokenId(),
+                    null,
+                    null,
+                    null);
 
-                log.debug("Re-encrypted token [{}]: DEK migrated from key [{}] → [{}]",
-                        vault.getTokenId(), oldKeyVersionId, newKeyVersionId);
-            } finally {
-                Arrays.fill(newEncryptedDek, (byte) 0);
-            }
+            log.debug("Re-encrypted token [{}]: DEK migrated from key [{}] → [{}]",
+                    vault.getTokenId(), oldKeyVersionId, newKeyVersionId);
         } finally {
             Arrays.fill(oldKek, (byte) 0);
             Arrays.fill(newKek, (byte) 0);

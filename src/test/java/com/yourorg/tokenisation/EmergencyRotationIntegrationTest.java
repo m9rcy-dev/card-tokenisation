@@ -106,7 +106,7 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
 
         keyRotationService.initiateEmergencyRotation(compromisedKeyId, "emergency-key-v2");
 
-        assertThat(keyVersionRepository.findActive())
+        assertThat(keyVersionRepository.findActiveKek())
                 .isPresent()
                 .get()
                 .satisfies(kv -> assertThat(kv.getId()).isNotEqualTo(compromisedKeyId));

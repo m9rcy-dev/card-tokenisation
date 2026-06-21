@@ -103,7 +103,7 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(keyVersionRepository.findById(oldKeyId).orElseThrow().getStatus())
                 .isEqualTo(KeyStatus.ROTATING);
-        assertThat(keyVersionRepository.findActive())
+        assertThat(keyVersionRepository.findActiveKek())
                 .isPresent()
                 .get()
                 .satisfies(kv -> assertThat(kv.getId()).isNotEqualTo(oldKeyId));
@@ -118,7 +118,7 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
 
         UUID oldKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
         keyRotationService.initiateScheduledRotation("test-key-v2", RotationReason.SCHEDULED);
-        UUID newKeyId = keyVersionRepository.findActiveOrThrow().getId();
+        UUID newKeyId = keyVersionRepository.findActiveKekOrThrow().getId();
 
         rotationJob.processRotationBatch();
 

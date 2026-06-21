@@ -88,7 +88,7 @@ public class HealthService {
             // has successfully loaded and promoted it. A ring that failed to initialise
             // at startup will throw IllegalStateException from getActive(), which we treat
             // as DOWN — preventing a healthy DB check from masking an unusable key ring.
-            if (keyVersionRepository.findActive().isEmpty()) {
+            if (keyVersionRepository.findActiveKek().isEmpty()) {
                 log.error("Key ring health check failed: no ACTIVE key version in database");
                 return STATUS_DOWN;
             }

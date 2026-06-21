@@ -147,7 +147,7 @@ class LocalStackRotationTest extends AbstractLocalStackIntegrationTest {
 
         assertThat(keyVersionRepository.findById(UUID.fromString(seedKekId)).orElseThrow().getStatus())
                 .isEqualTo(KeyStatus.ROTATING);
-        assertThat(keyVersionRepository.findActive())
+        assertThat(keyVersionRepository.findActiveKek())
                 .isPresent()
                 .get()
                 .satisfies(kv -> assertThat(kv.getId().toString()).isNotEqualTo(seedKekId));
@@ -172,7 +172,7 @@ class LocalStackRotationTest extends AbstractLocalStackIntegrationTest {
 
         UUID oldKekId = UUID.fromString(seedKekId);
         keyRotationService.initiateScheduledRotation("ls-kek-v2", RotationReason.SCHEDULED);
-        UUID newKekId = keyVersionRepository.findActiveOrThrow().getId();
+        UUID newKekId = keyVersionRepository.findActiveKekOrThrow().getId();
 
         rotationJob.processRotationBatch();
 

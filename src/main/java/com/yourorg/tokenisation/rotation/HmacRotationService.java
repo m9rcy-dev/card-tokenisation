@@ -77,44 +77,38 @@ public class HmacRotationService {
         keyVersionRepository.save(activeHmac);
         keyVersionRepository.flush();
 
-        // 2. Generate new secret and encrypt directly via KMS (purpose=hmac-key)
+        // 2. Generate new secret — zeroed in finally regardless of success or failure
         byte[] newSecret = new byte[HMAC_SECRET_LENGTH_BYTES];
         new SecureRandom().nextBytes(newSecret);
-        byte[] encryptedSecret;
         try {
-            encryptedSecret = kmsProvider.wrapNewHmacKey(newSecret);
-        } finally {
-            // newSecret zeroed after ring.load() below — must survive until then
-        }
+            byte[] encryptedSecret = kmsProvider.wrapNewHmacKey(newSecret);
 
-        // 3. Persist new HMAC version (ACTIVE) — carry forward kmsKeyId/kmsProvider from the active row
-        Instant rotateBy = Instant.now().plus(ROTATE_BY_DAYS, ChronoUnit.DAYS);
-        KeyVersion newHmacVersion = KeyVersion.forHmac(
-                encryptedSecret, activeHmac.getKmsKeyId(), activeHmac.getKmsProvider(),
-                newKeyAlias, rotateBy, "hmac-rotation-service");
-        keyVersionRepository.saveAndFlush(newHmacVersion);
-        String newVersionId = newHmacVersion.getId().toString();
+            // 3. Persist new HMAC version (ACTIVE) — carry forward kmsKeyId/kmsProvider from the active row
+            Instant rotateBy = Instant.now().plus(ROTATE_BY_DAYS, ChronoUnit.DAYS);
+            KeyVersion newHmacVersion = KeyVersion.forHmac(
+                    encryptedSecret, activeHmac.getKmsKeyId(), activeHmac.getKmsProvider(),
+                    newKeyAlias, rotateBy, "hmac-rotation-service");
+            keyVersionRepository.saveAndFlush(newHmacVersion);
+            String newVersionId = newHmacVersion.getId().toString();
 
-        // 4. Load into ring and promote — new tokenisations use new secret immediately
-        try {
+            // 4. Load into ring and promote — new tokenisations use new secret immediately
             hmacKeyRing.load(newVersionId, newSecret, rotateBy);
+            hmacKeyRing.promoteActive(newVersionId);
+
+            // 5. Audit
+            auditLogger.logKeyEvent(
+                    AuditEventType.HMAC_ROTATION_STARTED,
+                    oldVersionId,
+                    "SUCCESS",
+                    "HMAC rotation started: old=[" + oldVersionId + "] → ROTATING, new=["
+                            + newVersionId + "] → ACTIVE",
+                    null);
+
+            log.info("HMAC rotation initiated: rotating=[{}], new=[{}]", oldVersionId, newVersionId);
+            return newHmacVersion.getId();
         } finally {
             Arrays.fill(newSecret, (byte) 0);
-            Arrays.fill(encryptedSecret, (byte) 0);
         }
-        hmacKeyRing.promoteActive(newVersionId);
-
-        // 5. Audit
-        auditLogger.logKeyEvent(
-                AuditEventType.HMAC_ROTATION_STARTED,
-                oldVersionId,
-                "SUCCESS",
-                "HMAC rotation started: old=[" + oldVersionId + "] → ROTATING, new=["
-                        + newVersionId + "] → ACTIVE",
-                null);
-
-        log.info("HMAC rotation initiated: rotating=[{}], new=[{}]", oldVersionId, newVersionId);
-        return newHmacVersion.getId();
     }
 
     /**
