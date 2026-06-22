@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tokenisation
+      POSTGRES_USER: tokenisation_app
+      POSTGRES_PASSWORD: local-dev-password
+    ports:
+      - "5432:5432"
+    command: >
+      postgres
+        -c max_connections=200
+        -c synchronous_commit=off
+        -c fsync=off
+        -c full_page_writes=off
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tokenisation_app -d tokenisation"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  kms:
+    image: nsmithuk/local-kms:latest
+    ports:
+      - "4566:8080"
+    environment:
+      PORT: 8080
+      KMS_REGION: ap-southeast-2
+    volumes:
+      - ./local-kms-seed.yaml:/init/seed.yaml
