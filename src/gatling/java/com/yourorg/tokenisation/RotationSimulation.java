@@ -53,9 +53,6 @@ public class RotationSimulation extends Simulation {
     /** Tokens to pre-seed for detokenisation requests during the simulation. */
     private static final int SEED_COUNT = 5_000;
 
-    private static final String SEED_KEY_VERSION_ID =
-            System.getProperty("seedKeyVersionId", "00000000-0000-0000-0000-000000000001");
-
     private static final String ADMIN_USER =
             System.getProperty("adminUser", "admin");
 
@@ -112,7 +109,7 @@ public class RotationSimulation extends Simulation {
         System.out.printf("[RotationSimulation] Setup: truncate + reset keys + seed %d tokens + trigger rotation%n",
                 SEED_COUNT);
         DbSetupHelper.truncate();
-        DbSetupHelper.resetKeyVersions(SEED_KEY_VERSION_ID);
+        DbSetupHelper.resetKeyVersions();
         seedTokensViaHttp(SEED_COUNT);
         triggerRotation();
         System.out.printf("[RotationSimulation] Setup complete — rotation in progress. " +

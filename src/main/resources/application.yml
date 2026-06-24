@@ -59,6 +59,10 @@ detokenisation:
     per-service-per-minute: 10000
 
 rotation:
+  ring-refresh:
+    # Sync each pod's in-memory key ring against DB every 60 seconds.
+    # Corrects stale rings after rotation initiated on a different pod.
+    cron: "0 * * * * *"
   batch:
     # Run rotation batch every 15 minutes
     cron: "0 */15 * * * *"
@@ -89,6 +93,23 @@ springdoc:
     path: /swagger-ui.html
     tags-sorter: alpha
     operations-sorter: alpha
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: card-tokenisation
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5,0.95,0.99
 
 logging:
   level:

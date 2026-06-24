@@ -8,6 +8,7 @@ import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,6 +50,7 @@ public class RotationJob {
     }
 
     @Scheduled(cron = "${rotation.batch.cron}")
+    @SchedulerLock(name = "kek-rotation-batch", lockAtMostFor = "PT10M")
     public void processRotationBatch() {
         Optional<KeyVersion> rotatingOpt = keyVersionRepository.findOldestPendingMigration();
         if (rotatingOpt.isEmpty()) {

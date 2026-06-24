@@ -46,25 +46,46 @@ public final class DbSetupHelper {
     }
 
     /**
-     * Resets key version state so the seed key is ACTIVE and all other keys are RETIRED.
+     * Resets KEK state so exactly one ACTIVE KEK exists — whichever one is currently
+     * ACTIVE in the database — and all other KEK versions are RETIRED.
      *
-     * <p>Call this before rotation simulations to ensure the key ring starts in a known state.
+     * <p>HMAC key versions are intentionally untouched so that PAN de-duplication
+     * continues to work after the reset.
      *
-     * @param seedKeyVersionId the UUID of the seed key version to set ACTIVE
+     * <p>Call this before rotation simulations to drain any leftover ROTATING or
+     * COMPROMISED KEKs from a previous run, leaving the app in a clean pre-rotation
+     * state that matches its in-memory ring.
+     *
+     * @throws IllegalStateException if no ACTIVE KEK exists (app is not running or ring
+     *                               failed to initialise)
      */
-    public static void resetKeyVersions(String seedKeyVersionId) {
+    public static void resetKeyVersions() {
         try (Connection conn = openConnection()) {
+            // Discover the UUID the live app is actually using — do not assume a fixed UUID.
+            // LocalDevKeySeeder uses gen_random_uuid(); only TestDataSeederConfig (test-only)
+            // inserts the well-known 00000000-...-000001 UUID.
+            String activeKekId;
+            try (PreparedStatement find = conn.prepareStatement(
+                    "SELECT id FROM key_versions WHERE key_type = 'KEK' AND status = 'ACTIVE' LIMIT 1")) {
+                var rs = find.executeQuery();
+                if (!rs.next()) {
+                    throw new IllegalStateException(
+                            "[DbSetupHelper] No ACTIVE KEK in key_versions. " +
+                            "Is the application running and fully initialised?");
+                }
+                activeKekId = rs.getString(1);
+            }
+            // Retire only KEK rows — leave HMAC rows untouched so pan_hash lookups still work.
             try (PreparedStatement retire = conn.prepareStatement(
-                    "UPDATE key_versions SET status = 'RETIRED' WHERE id != ?::uuid")) {
-                retire.setString(1, seedKeyVersionId);
-                retire.executeUpdate();
+                    "UPDATE key_versions SET status = 'RETIRED' " +
+                    "WHERE key_type = 'KEK' AND id != ?::uuid AND status != 'RETIRED'")) {
+                retire.setString(1, activeKekId);
+                int rows = retire.executeUpdate();
+                if (rows > 0) {
+                    System.out.println("[DbSetupHelper] Retired " + rows + " stale KEK version(s) from previous run.");
+                }
             }
-            try (PreparedStatement activate = conn.prepareStatement(
-                    "UPDATE key_versions SET status = 'ACTIVE' WHERE id = ?::uuid")) {
-                activate.setString(1, seedKeyVersionId);
-                activate.executeUpdate();
-            }
-            System.out.println("[DbSetupHelper] Key versions reset: seed key [" + seedKeyVersionId + "] is ACTIVE.");
+            System.out.println("[DbSetupHelper] KEK versions reset. Active KEK: [" + activeKekId + "]");
         } catch (SQLException e) {
             throw new RuntimeException("DbSetupHelper.resetKeyVersions() failed: " + e.getMessage(), e);
         }

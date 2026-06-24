@@ -36,6 +36,8 @@ detokenisation:
     per-service-per-minute: 100000
 
 rotation:
+  ring-refresh:
+    cron: "-"
   batch:
     # Disabled during standard test runs — rotation tests trigger the job explicitly
     cron: "-"

@@ -60,10 +60,11 @@ export DATASOURCE_PASSWORD   := $(POSTGRES_PASSWORD)
 export PAN_HASH_SECRET       := local-dev-pan-hash-secret-32bytes!
 export KMS_PROVIDER          := local-dev
 export KMS_LOCAL_DEV_KEK_HEX := 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
-# HikariCP pool size — must be > rotation.batch.parallelism (8) + 5 headroom = 13 minimum.
-# 60 gives 2× headroom over the ~30 concurrent connections needed at 333 rps with a 90ms
-# average transaction hold time, absorbing a 50ms GC pause without exhaustion.
-export HIKARI_MAX_POOL_SIZE  := 60
+# HikariCP pool size — sized for high-load Gatling runs with concurrent rotation.
+# Rotation batch holds parallelism (8) connections continuously. Live traffic at ~1500 rps
+# with ~5ms avg hold time needs ~7 concurrent connections. Buffer to 120 for burst headroom.
+# Must stay below Postgres max_connections (200) with room for admin/monitoring connections.
+export HIKARI_MAX_POOL_SIZE  := 120
 # Virtual threads — allows Tomcat to handle high concurrency without a fixed thread pool.
 # Required for Gatling simulations to avoid platform-thread exhaustion under load.
 export VIRTUAL_THREADS_ENABLED := true
@@ -78,7 +79,8 @@ LOCALSTACK_KEY_ALIAS := alias/card-tokenisation-kek
 .PHONY: help build test load-test localstack-test results \
         start stop-postgres start-postgres db-migrate \
         start-localstack stop-localstack run-localstack localstack-full \
-        clean gradle-wrapper bruno-run bruno-run-admin gatling-test
+        clean gradle-wrapper bruno-run bruno-run-admin gatling-test metrics watch-metrics \
+        start-monitoring stop-monitoring
 
 ## help: show this message
 help:
@@ -152,7 +154,10 @@ db-migrate: start-postgres
 
 ## start: start the Spring Boot app with local-dev KMS (no AWS, starts postgres first)
 start: db-migrate
-	MAVEN_OPTS="-XX:MaxGCPauseMillis=50 -Djava.security.egd=file:/dev/./urandom" \
+	MAVEN_OPTS="-XX:MaxGCPauseMillis=50 \
+	  -Djava.security.egd=file:/dev/./urandom \
+	  -Djdk.virtualThreadScheduler.parallelism=256 \
+	  -Djdk.virtualThreadScheduler.maxPoolSize=512" \
 	$(_BUILD) $(_CMD_run)
 
 # ── LocalStack KMS (real AWS KMS API via LocalStack) ─────────────────────────
@@ -224,6 +229,28 @@ bruno-run-admin:
 		echo "App is not running. Start it first with: make start"; exit 1; \
 	}
 	cd bruno/card-tokenisation-api && bru run admin --env local -r
+
+## metrics: one-shot snapshot of key load-test metrics (HikariCP, JVM heap, GC, CPU, HTTP throughput)
+metrics:
+	@curl -sf http://localhost:8080/actuator/prometheus 2>/dev/null | grep -E \
+	  '^(hikaricp_connections|jvm_memory_used_bytes\{.*heap|jvm_gc_pause_seconds_count|process_cpu_usage|http_server_requests_seconds_count|jvm_threads_live)' \
+	  | sort || echo "App is not running or /actuator/prometheus is not reachable."
+
+## watch-metrics: poll metrics every 2s (macOS-compatible alternative to watch -n2 make metrics)
+watch-metrics:
+	@while true; do clear; date; echo ""; $(MAKE) --no-print-directory metrics; sleep 2; done
+
+## start-monitoring: start Prometheus + Grafana (requires: make start)
+start-monitoring:
+	docker compose -f docker-compose-monitoring.yml up -d
+	@echo ""
+	@echo "  Prometheus: http://localhost:9090"
+	@echo "  Grafana:    http://localhost:3000  (admin / admin)"
+	@echo "  Dashboard:  http://localhost:3000/d/card-tokenisation"
+
+## stop-monitoring: stop and remove Prometheus + Grafana containers
+stop-monitoring:
+	docker compose -f docker-compose-monitoring.yml down
 
 ## gradle-wrapper: generate gradlew and gradlew.bat (requires Gradle installed locally, run once)
 gradle-wrapper:

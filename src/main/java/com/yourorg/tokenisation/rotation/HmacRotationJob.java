@@ -4,6 +4,7 @@ import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.InMemoryHmacKeyRing;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -53,6 +54,7 @@ public class HmacRotationJob {
      * {@code maxBatchesPerRun} cap is reached.
      */
     @Scheduled(cron = "${rotation.hmac-batch.cron}")
+    @SchedulerLock(name = "hmac-rotation-batch", lockAtMostFor = "PT10M")
     public void processHmacRotationBatch() {
         Optional<String> rotatingOpt = hmacKeyRing.findRotatingVersionId();
         if (rotatingOpt.isEmpty()) {
