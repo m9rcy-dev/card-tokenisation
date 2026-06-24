@@ -22,6 +22,8 @@
         <java.version>21</java.version>
         <aws.sdk.version>2.26.7</aws.sdk.version>
         <testcontainers.version>1.21.4</testcontainers.version>
+        <!-- Excluded by default; cleared selectively by load-tests / localstack-tests profiles -->
+        <surefire.excluded.groups>load,localstack</surefire.excluded.groups>
     </properties>
 
     <dependencyManagement>
@@ -129,12 +131,46 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>localstack</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Apache HttpClient 5 — required for PATCH support in TestRestTemplate (Spring 6+) -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+            <scope>test</scope>
+        </dependency>
 
         <!-- ── OpenAPI / Swagger UI ──────────────────────────────── -->
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
             <version>2.5.0</version>
+        </dependency>
+
+        <!-- ── ShedLock — distributed @Scheduled lock via Postgres ─ -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>5.16.0</version>
+        </dependency>
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-jdbc-template</artifactId>
+            <version>5.16.0</version>
+        </dependency>
+
+        <!-- ── Observability — Actuator + Prometheus scrape endpoint ─ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
     </dependencies>
@@ -201,7 +237,7 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <excludedGroups>load</excludedGroups>
+                    <excludedGroups>${surefire.excluded.groups}</excludedGroups>
                 </configuration>
             </plugin>
             <plugin>
@@ -246,6 +282,10 @@
         -->
         <profile>
             <id>load-tests</id>
+            <properties>
+                <!-- Clear the default exclusion so @Tag("load") tests are not excluded -->
+                <surefire.excluded.groups></surefire.excluded.groups>
+            </properties>
             <build>
                 <plugins>
                     <plugin>
@@ -277,6 +317,33 @@
                                 -Djdk.virtualThreadScheduler.parallelism=256
                                 -Djdk.virtualThreadScheduler.maxPoolSize=512
                             </argLine>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            LocalStack integration test profile — excluded from the standard `mvn test` run.
+            Requires Docker; starts a LocalStack KMS container and a real PostgreSQL container
+            via Testcontainers (all managed inside the test itself — no `make start-localstack` needed).
+            Run explicitly: mvn test -P localstack-tests
+                            make localstack-test
+        -->
+        <profile>
+            <id>localstack-tests</id>
+            <properties>
+                <!-- Run only @Tag("localstack") tests; load tests remain excluded -->
+                <surefire.excluded.groups>load</surefire.excluded.groups>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>localstack</groups>
+                            <argLine>-Xmx1g -Xms256m</argLine>
                         </configuration>
                     </plugin>
                 </plugins>

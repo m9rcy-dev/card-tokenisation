@@ -1,7 +1,7 @@
 meta {
   name: Tokenise - 400 non-numeric PAN
   type: http
-  seq: 6
+  seq: 13
 }
 
 post {
@@ -19,9 +19,7 @@ body:json {
     "pan": "4111-1111-1111-1111",
     "expiryMonth": 12,
     "expiryYear": 2027,
-    "cardScheme": "VISA",
-    "tokenType": "ONE_TIME",
-    "merchantId": "{{merchantId}}"
+    "cardScheme": "MC"
   }
 }
 

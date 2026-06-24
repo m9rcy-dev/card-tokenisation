@@ -1,6 +1,5 @@
 package com.yourorg.tokenisation.api.response;
 
-import com.yourorg.tokenisation.domain.TokenType;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -32,7 +31,7 @@ public class DetokeniseResponse {
     private final Integer expiryYear;
 
     /**
-     * Payment card scheme (e.g. {@code VISA}, {@code MC}, {@code AMEX}).
+     * Payment card scheme (e.g. {@code MC}).
      * May be {@code null} if not recorded at tokenise time.
      */
     private final String cardScheme;
@@ -42,9 +41,6 @@ public class DetokeniseResponse {
      * Safe to log and display — does not allow PAN recovery.
      */
     private final String lastFour;
-
-    /** Whether the token was issued for recurring billing or a one-off payment. */
-    private final TokenType tokenType;
 
     /**
      * Returns a masked representation of this response.
@@ -64,7 +60,6 @@ public class DetokeniseResponse {
                 + ", expiryMonth=" + expiryMonth
                 + ", expiryYear=" + expiryYear
                 + ", cardScheme=" + cardScheme
-                + ", lastFour=" + lastFour
-                + ", tokenType=" + tokenType + "}";
+                + ", lastFour=" + lastFour + "}";
     }
 }

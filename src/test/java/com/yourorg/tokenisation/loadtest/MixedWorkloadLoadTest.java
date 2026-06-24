@@ -3,16 +3,12 @@ package com.yourorg.tokenisation.loadtest;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.domain.TokenType;
 import com.yourorg.tokenisation.loadtest.RandomWorkloadDispatcher.Operation;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -47,11 +43,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("load")
 class MixedWorkloadLoadTest extends AbstractLoadTest {
 
-    private static final String MERCHANT = "LOAD_MERCHANT_MIX";
-
-    // 40% ONE_TIME tokenise · 20% RECURRING tokenise · 35% detokenise · 5% status check
+    // 60% tokenise · 35% detokenise · 5% status check
     private static final RandomWorkloadDispatcher DISPATCHER =
-            new RandomWorkloadDispatcher(40, 20, 35, 5);
+            new RandomWorkloadDispatcher(60, 35, 5);
 
     @Autowired private TestRestTemplate restTemplate;
     @Autowired private JdbcTemplate jdbcTemplate;
@@ -118,28 +112,10 @@ class MixedWorkloadLoadTest extends AbstractLoadTest {
                 long t0 = System.currentTimeMillis();
                 try {
                     switch (op) {
-                        case TOKENISE_ONE_TIME -> {
-                            TokeniseRequest req = buildRequest(PanGenerator.generateVisa16(), TokenType.ONE_TIME);
-                            ResponseEntity<TokeniseResponse> resp =
-                                    restTemplate.postForEntity("/api/v1/tokens", req, TokeniseResponse.class);
-                            if (resp.getStatusCode().is2xxSuccessful() && resp.getBody() != null) {
-                                tokenPool.add(resp.getBody().getToken());
-                            } else {
-                                errorCount.incrementAndGet();
-                            }
-                        }
-                        case TOKENISE_RECURRING -> {
-                            // Use a unique PAN per request — NOT a shared PAN.
-                            //
-                            // A shared PAN across concurrent threads causes a race condition:
-                            // multiple threads simultaneously call findActiveRecurringByPanHash,
-                            // all find zero results, all insert a new row. The next lookup
-                            // finds multiple rows and throws NonUniqueResultException.
-                            //
-                            // Dedup correctness under concurrent writes is covered by the
-                            // integration tests (DetokenisationIntegrationTest). The load test's
-                            // goal is throughput and stability, not dedup stress.
-                            TokeniseRequest req = buildRequest(PanGenerator.generateVisa16(), TokenType.RECURRING);
+                        case TOKENISE -> {
+                            // Each request uses a unique PAN to avoid de-dup short-circuiting
+                            // the vault path — the load test goal is throughput, not de-dup correctness.
+                            TokeniseRequest req = buildRequest(PanGenerator.generateVisa16());
                             ResponseEntity<TokeniseResponse> resp =
                                     restTemplate.postForEntity("/api/v1/tokens", req, TokeniseResponse.class);
                             if (resp.getStatusCode().is2xxSuccessful() && resp.getBody() != null) {
@@ -151,7 +127,7 @@ class MixedWorkloadLoadTest extends AbstractLoadTest {
                         case DETOKENISE -> {
                             String token = pickToken(tokenPool, tokenPoolIndex);
                             if (token != null) {
-                                ResponseEntity<DetokeniseResponse> resp = detokenise(token, MERCHANT);
+                                ResponseEntity<DetokeniseResponse> resp = detokenise(token);
                                 if (!resp.getStatusCode().is2xxSuccessful()) {
                                     errorCount.incrementAndGet();
                                 }
@@ -162,11 +138,8 @@ class MixedWorkloadLoadTest extends AbstractLoadTest {
                             // Both are valid "system-is-alive" responses — only 5xx counts as error.
                             String token = pickToken(tokenPool, tokenPoolIndex);
                             if (token != null) {
-                                ResponseEntity<String> resp = restTemplate.exchange(
-                                        "/api/v1/tokens/" + token,
-                                        HttpMethod.GET,
-                                        buildMerchantHeaderEntity(),
-                                        String.class);
+                                ResponseEntity<String> resp = restTemplate.getForEntity(
+                                        "/api/v1/tokens/" + token, String.class);
                                 if (resp.getStatusCode().is5xxServerError()) {
                                     errorCount.incrementAndGet();
                                 }
@@ -211,7 +184,7 @@ class MixedWorkloadLoadTest extends AbstractLoadTest {
         for (int i = 0; i < count; i++) {
             seeder.submit(() -> {
                 String pan = PanGenerator.generateVisa16();
-                TokeniseRequest req = buildRequest(pan, TokenType.ONE_TIME);
+                TokeniseRequest req = buildRequest(pan);
                 ResponseEntity<TokeniseResponse> resp =
                         restTemplate.postForEntity("/api/v1/tokens", req, TokeniseResponse.class);
                 if (resp.getStatusCode().is2xxSuccessful() && resp.getBody() != null) {
@@ -235,27 +208,13 @@ class MixedWorkloadLoadTest extends AbstractLoadTest {
         return pool.get(idx);
     }
 
-    private ResponseEntity<DetokeniseResponse> detokenise(String token, String merchantId) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("X-Merchant-ID", merchantId);
-        return restTemplate.exchange(
-                "/api/v1/tokens/" + token,
-                HttpMethod.GET,
-                new HttpEntity<>(headers),
-                DetokeniseResponse.class);
+    private ResponseEntity<DetokeniseResponse> detokenise(String token) {
+        return restTemplate.getForEntity("/api/v1/tokens/" + token, DetokeniseResponse.class);
     }
 
-    private HttpEntity<Void> buildMerchantHeaderEntity() {
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("X-Merchant-ID", MERCHANT);
-        return new HttpEntity<>(headers);
-    }
-
-    private TokeniseRequest buildRequest(String pan, TokenType tokenType) {
+    private TokeniseRequest buildRequest(String pan) {
         TokeniseRequest r = new TokeniseRequest();
         r.setPan(pan);
-        r.setTokenType(tokenType);
-        r.setMerchantId(MERCHANT);
         r.setCardScheme("VISA");
         r.setExpiryMonth(12);
         r.setExpiryYear(2027);

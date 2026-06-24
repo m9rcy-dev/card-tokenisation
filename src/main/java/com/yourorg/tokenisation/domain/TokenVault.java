@@ -1,16 +1,6 @@
 package com.yourorg.tokenisation.domain;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.ManyToOne;
-import jakarta.persistence.Table;
-import jakarta.persistence.Version;
+import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -28,8 +18,8 @@ import java.util.UUID;
  * per-record IV ({@code iv}), the GCM authentication tag ({@code authTag}), and
  * the KEK-wrapped DEK ({@code encryptedDek}) are persisted.
  *
- * <p>{@code panHash} is an HMAC-SHA256 of the PAN used solely for de-duplication
- * of {@code RECURRING} tokens. It does not allow PAN recovery.
+ * <p>{@code panHash} is an HMAC-SHA256 of the PAN used for de-duplication.
+ * It does not allow PAN recovery.
  *
  * <p>{@code recordVersion} is used for optimistic locking during key rotation
  * re-encryption. A rotation update that encounters a stale version is retried.
@@ -94,46 +84,47 @@ public class TokenVault {
 
     /**
      * HMAC-SHA256 of the PAN using a hashing secret separate from the KEK.
-     * Used exclusively for de-duplication of {@code RECURRING} tokens.
-     * Does not allow PAN recovery.
+     * Used for de-duplication lookup. Does not allow PAN recovery.
+     * Updated during card replacement ({@link #replacePanFields}).
      */
-    @Column(name = "pan_hash", nullable = false, updatable = false)
+    @Column(name = "pan_hash", nullable = false)
     private String panHash;
 
-    /** Whether this token is for recurring billing (deterministic) or one-off payment (non-deterministic). */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "token_type", nullable = false, updatable = false)
-    private TokenType tokenType;
+    /**
+     * UUID of the {@link KeyVersion} (type HMAC) whose secret produced {@code panHash}.
+     * Nullable on rows created before HMAC versioning was introduced; backfilled by
+     * {@code HmacKeyBootstrapService} on first boot.
+     * Used by the HMAC rotation batch to identify which vault rows need re-hashing.
+     */
+    @Column(name = "hmac_key_version_id")
+    private UUID hmacKeyVersionId;
 
     /**
      * Last four digits of the PAN, stored in clear.
      * Not sensitive — used for display purposes (e.g. "Card ending in 1111").
+     * Updated during card replacement ({@link #replacePanFields}).
      */
-    @Column(name = "last_four", nullable = false, updatable = false, length = 4)
+    @Column(name = "last_four", nullable = false, length = 4)
     private String lastFour;
 
     /**
-     * Payment card scheme (e.g. {@code VISA}, {@code MC}, {@code AMEX}, {@code EFTPOS}).
-     * Stored in clear for routing and display. May be {@code null} if unknown.
+     * Payment card scheme (e.g. {@code MC}).
+     * Stored in clear for display. Updated during card replacement ({@link #replacePanFields}).
      */
-    @Column(name = "card_scheme", updatable = false, length = 10)
+    @Column(name = "card_scheme", length = 10)
     private String cardScheme;
 
-    /** Card expiry month (1–12). May be {@code null} if not provided at tokenise time. */
-    @Column(name = "expiry_month", updatable = false)
+    /**
+     * Card expiry month (1–12). Updated during card replacement ({@link #replacePanFields}).
+     */
+    @Column(name = "expiry_month")
     private Short expiryMonth;
 
-    /** Card expiry year (e.g. 2027). May be {@code null} if not provided at tokenise time. */
-    @Column(name = "expiry_year", updatable = false)
-    private Short expiryYear;
-
     /**
-     * Scopes this token to a specific merchant.
-     * Detokenisation requests from a different merchant are rejected with a 403.
-     * Extracted from authenticated JWT claims — never sourced from the request body.
+     * Card expiry year (e.g. 2027). Updated during card replacement ({@link #replacePanFields}).
      */
-    @Column(name = "merchant_id", updatable = false)
-    private String merchantId;
+    @Column(name = "expiry_year")
+    private Short expiryYear;
 
     /** Timestamp when this token was created. */
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -172,12 +163,10 @@ public class TokenVault {
      * @param encryptedDek   DEK wrapped by the active KEK
      * @param keyVersion     the key version whose KEK wrapped the DEK
      * @param panHash        HMAC-SHA256 of the PAN for de-duplication
-     * @param tokenType      {@code RECURRING} or {@code ONE_TIME}
      * @param lastFour       last four digits of the PAN (stored in clear)
      * @param cardScheme     payment scheme (may be {@code null})
      * @param expiryMonth    card expiry month (may be {@code null})
      * @param expiryYear     card expiry year (may be {@code null})
-     * @param merchantId     merchant scope (may be {@code null} for global tokens)
      * @param createdAt      creation timestamp
      * @param expiresAt      optional token expiry (may be {@code null})
      */
@@ -190,12 +179,11 @@ public class TokenVault {
             byte[] encryptedDek,
             KeyVersion keyVersion,
             String panHash,
-            TokenType tokenType,
+            UUID hmacKeyVersionId,
             String lastFour,
             String cardScheme,
             Short expiryMonth,
             Short expiryYear,
-            String merchantId,
             Instant createdAt,
             Instant expiresAt) {
         this.token = token;
@@ -205,16 +193,27 @@ public class TokenVault {
         this.encryptedDek = encryptedDek.clone();
         this.keyVersion = keyVersion;
         this.panHash = panHash;
-        this.tokenType = tokenType;
+        this.hmacKeyVersionId = hmacKeyVersionId;
         this.lastFour = lastFour;
         this.cardScheme = cardScheme;
         this.expiryMonth = expiryMonth;
         this.expiryYear = expiryYear;
-        this.merchantId = merchantId;
         this.createdAt = createdAt;
         this.expiresAt = expiresAt;
         this.isActive = true;
         this.recordVersion = 1;
+    }
+
+    /**
+     * Updates the {@code panHash} and records which HMAC key version produced it.
+     * Called by {@code PanHashBatchProcessor} during HMAC key rotation.
+     *
+     * @param newPanHash       new HMAC-SHA256 of the PAN under the new HMAC key
+     * @param newHmacVersionId UUID of the new HMAC key version row
+     */
+    public void updatePanHash(String newPanHash, UUID newHmacVersionId) {
+        this.panHash = newPanHash;
+        this.hmacKeyVersionId = newHmacVersionId;
     }
 
     /**
@@ -236,6 +235,56 @@ public class TokenVault {
      */
     public void deactivate() {
         this.isActive = false;
+    }
+
+    /**
+     * Replaces all PAN-related fields with data for a new card.
+     *
+     * <p>Used when a customer's card is replaced (lost/stolen, renewal, upgrade).
+     * The token value, token ID, and creation timestamp are unchanged — downstream
+     * systems continue using the same token with no updates required.
+     *
+     * <p>A fresh DEK and IV are expected in the caller's {@code EncryptResult},
+     * consistent with the principle that key material is never reused across
+     * different plaintext values. The {@code keyVersion} is updated to the
+     * currently active version, so card replacement also migrates the record
+     * to the latest key.
+     *
+     * @param newEncryptedPan  AES-256-GCM ciphertext of the new PAN
+     * @param newIv            12-byte GCM IV generated fresh for this encryption
+     * @param newAuthTag       16-byte GCM authentication tag
+     * @param newEncryptedDek  DEK wrapped under the active KEK
+     * @param newKeyVersion    key version whose KEK was used to wrap the new DEK
+     * @param newPanHash       HMAC-SHA256 of the new PAN for de-duplication
+     * @param newLastFour      last four digits of the new PAN (stored in clear)
+     * @param newCardScheme    payment scheme of the new card
+     * @param newExpiryMonth   expiry month of the new card
+     * @param newExpiryYear    expiry year of the new card
+     * @param newExpiresAt     new token expiry timestamp
+     */
+    public void replacePanFields(
+            byte[] newEncryptedPan,
+            byte[] newIv,
+            byte[] newAuthTag,
+            byte[] newEncryptedDek,
+            KeyVersion newKeyVersion,
+            String newPanHash,
+            String newLastFour,
+            String newCardScheme,
+            Short newExpiryMonth,
+            Short newExpiryYear,
+            Instant newExpiresAt) {
+        this.encryptedPan = newEncryptedPan.clone();
+        this.iv = newIv.clone();
+        this.authTag = newAuthTag.clone();
+        this.encryptedDek = newEncryptedDek.clone();
+        this.keyVersion = newKeyVersion;
+        this.panHash = newPanHash;
+        this.lastFour = newLastFour;
+        this.cardScheme = newCardScheme;
+        this.expiryMonth = newExpiryMonth;
+        this.expiryYear = newExpiryYear;
+        this.expiresAt = newExpiresAt;
     }
 
     /**

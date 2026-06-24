@@ -13,21 +13,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Spring MVC {@link HandlerInterceptor} that enforces per-merchant and per-service
- * rate limits on the detokenisation endpoint ({@code GET /api/v1/tokens/{token}}).
+ * Spring MVC {@link HandlerInterceptor} that enforces a per-service rate limit on the
+ * detokenisation endpoint ({@code GET /api/v1/tokens/{token}}).
  *
- * <p>Limits are applied using a fixed-window counter backed by Caffeine:
- * <ul>
- *   <li>A per-merchant counter tracks requests from each {@code X-Merchant-ID} value.
- *   <li>A global counter tracks total requests across all merchants.
- * </ul>
- * Each counter window is 1 minute, starting from the first request in that window.
- * When either counter exceeds its configured threshold, the request is rejected with
- * {@link RateLimitExceededException}, which {@code GlobalExceptionHandler} maps to HTTP 429.
- *
- * <p>If the {@code X-Merchant-ID} header is absent, the request is rejected with a
- * {@link RateLimitExceededException} to avoid bypassing per-merchant limits. (Full
- * header validation will move to JWT claims in a future phase.)
+ * <p>A single global counter tracks total requests per minute. When the counter exceeds
+ * the configured threshold, the request is rejected with {@link RateLimitExceededException},
+ * which {@code GlobalExceptionHandler} maps to HTTP 429.
  *
  * <p>The fixed-window approach is simple and sufficient for single-node deployments.
  * A sliding-window or token-bucket implementation backed by Redis would be required
@@ -39,8 +30,8 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     private static final String SERVICE_COUNTER_KEY = "__service__";
 
     /**
-     * Fixed-window counters keyed by merchant ID or {@link #SERVICE_COUNTER_KEY}.
-     * Entries expire 1 minute after creation (the first request in a window).
+     * Fixed-window counter keyed by {@link #SERVICE_COUNTER_KEY}.
+     * Entry expires 1 minute after creation (the first request in a window).
      */
     private final LoadingCache<String, AtomicLong> counters;
 
@@ -60,47 +51,28 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     }
 
     /**
-     * Checks per-merchant and per-service rate limits before allowing the request through.
+     * Checks the per-service rate limit before allowing the request through.
      *
-     * <p>Increments both counters atomically. If either exceeds its configured threshold,
-     * throws {@link RateLimitExceededException}. The increment is not rolled back on
-     * rejection — this prevents trivially gaming the limit by sending requests that
-     * just barely cross the threshold.
+     * <p>Increments the service counter atomically. If it exceeds the configured
+     * threshold, throws {@link RateLimitExceededException}. The increment is not
+     * rolled back on rejection — this prevents trivially gaming the limit.
      *
      * @param request  the incoming HTTP request
      * @param response the HTTP response (not modified — exception handling writes the response)
      * @param handler  the handler to invoke (not used)
      * @return {@code true} if the request is within limits and should proceed
-     * @throws RateLimitExceededException if either rate limit is exceeded
+     * @throws RateLimitExceededException if the service rate limit is exceeded
      */
     @Override
     public boolean preHandle(HttpServletRequest request,
                              HttpServletResponse response,
                              Object handler) throws Exception {
-        // Rate limiting applies only to the detokenisation GET endpoint.
-        // Tokenisation (POST) is unrestricted at the interceptor layer.
         if (!"GET".equalsIgnoreCase(request.getMethod())) {
             return true;
         }
 
-        String merchantId = request.getHeader("X-Merchant-ID");
-        if (merchantId == null || merchantId.isBlank() || merchantId.length() > 256) {
-            throw new RateLimitExceededException("X-Merchant-ID header is required for detokenisation and must be ≤256 characters");
-        }
-
-        long merchantCount = incrementAndGet(merchantId);
         long serviceCount = incrementAndGet(SERVICE_COUNTER_KEY);
-
-        int merchantLimit = properties.getPerMerchantPerMinute();
         int serviceLimit = properties.getPerServicePerMinute();
-
-        if (merchantCount > merchantLimit) {
-            log.warn("Rate limit exceeded for merchant [{}]: {} requests in current window (limit {})",
-                    merchantId, merchantCount, merchantLimit);
-            throw new RateLimitExceededException(
-                    "Rate limit exceeded for merchant " + merchantId
-                            + ": limit is " + merchantLimit + " requests per minute");
-        }
 
         if (serviceCount > serviceLimit) {
             log.warn("Service-wide rate limit exceeded: {} requests in current window (limit {})",
@@ -117,12 +89,11 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     /**
      * Atomically increments the counter for the given key, creating the entry if absent.
      *
-     * @param key the cache key (merchant ID or service sentinel)
+     * @param key the cache key
      * @return the counter value after incrementing
      */
     private long incrementAndGet(String key) {
         AtomicLong counter = counters.get(key);
-        // counter is never null — the CacheLoader always returns a new AtomicLong(0)
         return counter.incrementAndGet();
     }
 }

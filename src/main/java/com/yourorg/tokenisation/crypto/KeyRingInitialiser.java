@@ -7,101 +7,115 @@ import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
 import java.util.List;
 
 /**
- * Loads all active and rotating KEK versions from KMS into the {@link InMemoryKeyRing}
- * once at application startup.
+ * Loads all active and rotating KEK versions from KMS into the {@link InMemoryKekKeyRing},
+ * then decrypts and loads all active and rotating HMAC versions into the {@link InMemoryHmacKeyRing}.
  *
- * <p>By loading keys at startup (rather than per-request), we minimise runtime KMS
- * dependency: a KMS outage after startup does not affect tokenisation or detokenisation
- * of existing records. Only a restart would be blocked if KMS is unreachable.
+ * <p>Runs at {@code @Order(10)} — after seeders ({@code @Order(1)}) which ensure HMAC rows exist
+ * before Phase 2 of this initialiser runs.
  *
  * <p>Startup sequence:
  * <ol>
- *   <li>Query {@code key_versions} for all {@code ACTIVE} and {@code ROTATING} versions
- *       (ordered by {@code activatedAt} ascending).
- *   <li>For each version, call {@code KmsProvider.unwrapKek()} to obtain the raw KEK bytes.
- *   <li>Load each KEK into the {@link InMemoryKeyRing}.
- *   <li>Promote the single {@code ACTIVE} version as the current key.
- *   <li>Zero the local KEK byte array immediately after loading.
+ *   <li><b>Phase 1 — KEK ring</b>: query {@code key_versions WHERE key_type='KEK'} for ACTIVE/ROTATING,
+ *       unwrap each KEK blob via KMS, load into {@link InMemoryKekKeyRing}, promote the ACTIVE version.
+ *   <li><b>Phase 2 — HMAC ring</b>: query {@code key_versions WHERE key_type='HMAC'} for ACTIVE/ROTATING,
+ *       decrypt each HMAC secret using the loaded KEK (from the now-populated ring), load into
+ *       {@link InMemoryHmacKeyRing}, promote the ACTIVE version.
  * </ol>
  *
- * <p>If no {@code ACTIVE} key version exists, startup fails fast — the application
- * cannot serve requests without a current encryption key.
+ * <p>If no ACTIVE KEK or no ACTIVE HMAC key is found, startup fails fast.
  */
 @Component
+@Order(10)
 @Slf4j
 public class KeyRingInitialiser implements ApplicationRunner {
 
     private final KmsProvider kmsProvider;
     private final KeyVersionRepository keyVersionRepository;
-    private final InMemoryKeyRing keyRing;
+    private final InMemoryKekKeyRing keyRing;
+    private final InMemoryHmacKeyRing hmacKeyRing;
 
-    /**
-     * Constructs the initialiser with its required collaborators.
-     *
-     * @param kmsProvider          the KMS adapter used to unwrap KEK blobs; must not be null
-     * @param keyVersionRepository the repository for reading key version records; must not be null
-     * @param keyRing              the in-memory key ring to populate; must not be null
-     */
     public KeyRingInitialiser(KmsProvider kmsProvider,
                               KeyVersionRepository keyVersionRepository,
-                              InMemoryKeyRing keyRing) {
+                              InMemoryKekKeyRing keyRing,
+                              InMemoryHmacKeyRing hmacKeyRing) {
         this.kmsProvider = kmsProvider;
         this.keyVersionRepository = keyVersionRepository;
         this.keyRing = keyRing;
+        this.hmacKeyRing = hmacKeyRing;
     }
 
-    /**
-     * Initialises the key ring from the database and KMS.
-     *
-     * <p>Called automatically by Spring Boot after the application context is fully started
-     * but before it begins accepting traffic (because this implements {@link ApplicationRunner}).
-     *
-     * @param args Spring Boot application arguments — not used
-     * @throws IllegalStateException if no {@code ACTIVE} key version is found in the database
-     */
     @Override
     public void run(ApplicationArguments args) {
-        log.info("Initialising key ring — loading ACTIVE and ROTATING key versions from KMS");
-
-        List<KeyVersion> versionsToLoad = keyVersionRepository
-                .findByStatusIn(List.of(KeyStatus.ACTIVE, KeyStatus.ROTATING));
-
-        for (KeyVersion keyVersion : versionsToLoad) {
-            loadKeyVersion(keyVersion);
-        }
-
-        KeyVersion activeVersion = keyVersionRepository.findActiveOrThrow();
-        keyRing.promoteActive(activeVersion.getId().toString());
-
-        log.info("Key ring initialised successfully. Active key version: {}", activeVersion.getId());
+        loadKekRing();
+        loadHmacRing();
     }
 
-    /**
-     * Loads a single key version into the ring by unwrapping its KEK blob from KMS.
-     *
-     * <p>The KEK bytes are zeroed from local scope immediately after being passed to
-     * the key ring (which takes its own defensive copy).
-     *
-     * @param keyVersion the key version entity to load; must not be null
-     */
-    private void loadKeyVersion(KeyVersion keyVersion) {
-        byte[] kek = kmsProvider.unwrapKek(keyVersion.getEncryptedKekBlob());
+    // ── Phase 1: KEK ring ─────────────────────────────────────────────────────
+
+    private void loadKekRing() {
+        log.info("KeyRingInitialiser phase 1 — loading KEK versions");
+        List<KeyVersion> kekVersions = keyVersionRepository
+                .findKekByStatusIn(List.of(KeyStatus.ACTIVE, KeyStatus.ROTATING));
+
+        for (KeyVersion kv : kekVersions) {
+            loadKekVersion(kv);
+        }
+
+        KeyVersion activeKek = keyVersionRepository.findActiveKekOrThrow();
+        keyRing.promoteActive(activeKek.getId().toString());
+        log.info("KEK ring initialised. Active version: {}", activeKek.getId());
+    }
+
+    private void loadKekVersion(KeyVersion kv) {
+        byte[] kek = kmsProvider.unwrapKek(kv.getEncryptedKekBlob());
         try {
-            keyRing.load(
-                    keyVersion.getId().toString(),
-                    kek,
-                    keyVersion.getRotateBy()
-            );
-            log.info("Loaded key version {} (status: {}) into ring", keyVersion.getId(), keyVersion.getStatus());
+            keyRing.load(kv.getId().toString(), kek, kv.getRotateBy());
+            log.info("Loaded KEK version {} (status: {}) into ring", kv.getId(), kv.getStatus());
         } finally {
-            // Zero KEK bytes from this stack frame — the ring holds its own copy
             Arrays.fill(kek, (byte) 0);
+        }
+    }
+
+    // ── Phase 2: HMAC ring ────────────────────────────────────────────────────
+
+    private void loadHmacRing() {
+        log.info("KeyRingInitialiser phase 2 — loading HMAC versions");
+        List<KeyVersion> hmacVersions = keyVersionRepository
+                .findHmacByStatusIn(List.of(KeyStatus.ACTIVE, KeyStatus.ROTATING));
+
+        if (hmacVersions.isEmpty()) {
+            log.warn("KeyRingInitialiser: no ACTIVE or ROTATING HMAC key found in key_versions. "
+                    + "Tokenisation will fail until an HMAC key is seeded.");
+            return;
+        }
+
+        for (KeyVersion hv : hmacVersions) {
+            loadHmacVersion(hv);
+        }
+
+        keyVersionRepository.findActiveHmac().ifPresent(activeHmac -> {
+            hmacKeyRing.promoteActive(activeHmac.getId().toString());
+            log.info("HMAC ring initialised. Active version: {}", activeHmac.getId());
+        });
+    }
+
+    private void loadHmacVersion(KeyVersion hv) {
+        byte[] secret = null;
+        try {
+            secret = kmsProvider.unwrapHmacKey(hv.getEncryptedSecret());
+            hmacKeyRing.load(hv.getId().toString(), secret, hv.getRotateBy());
+            log.info("Loaded HMAC version {} (status: {}) into ring", hv.getId(), hv.getStatus());
+        } finally {
+            if (secret != null) {
+                Arrays.fill(secret, (byte) 0);
+            }
         }
     }
 }

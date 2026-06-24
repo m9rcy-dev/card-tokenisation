@@ -7,6 +7,10 @@ import io.gatling.javaapi.http.HttpProtocolBuilder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static io.gatling.javaapi.core.CoreDsl.*;
 import static io.gatling.javaapi.http.HttpDsl.*;
@@ -16,43 +20,38 @@ import static io.gatling.javaapi.http.HttpDsl.*;
  *
  * <h3>What this measures</h3>
  * <ul>
- *   <li>That live tokenisation and detokenisation succeed while rotation is in progress.
- *   <li>Throughput degradation during the rotation window (compare p99 before/during/after).
- *   <li>Total rotation wall-clock time (reported by the application via its logs).
+ *   <li>Zero errors during rotation — all tokenise and detokenise requests succeed.
+ *   <li>Throughput degradation during rotation (compare rps before vs. during).
+ *   <li>Total rotation wall-clock time visible in the app logs.
  * </ul>
  *
  * <h3>Scenario</h3>
  * <ol>
- *   <li>{@link #before()}: truncate tables, reset key state, seed {@link #SEED_COUNT} tokens
- *       (for detokenisation), then trigger rotation via {@code POST /api/v1/admin/keys/rotate}.
- *   <li>Phase 1 (ramp): gradually increase to {@link SimulationConfig#MAX_USERS} users
- *       executing a 70/30 tokenise/detokenise split.
- *   <li>Phase 2 (sustain): hold for {@link SimulationConfig#SUSTAIN_SECONDS}. Rotation
- *       runs concurrently in the application's scheduled job.
+ *   <li>{@link #before()}: truncate tables, reset key state in DB, seed {@link #SEED_COUNT} tokens,
+ *       then trigger rotation via {@code POST /api/v1/admin/keys/rotate}.
+ *   <li>Phase 1 (ramp): gradually increase to {@code targetRps} users/second with a
+ *       70/30 tokenise/detokenise split.
+ *   <li>Phase 2 (sustain): hold for {@link SimulationConfig#SUSTAIN_SECONDS}.
+ *       Rotation batch runs concurrently in the application's scheduled job.
  * </ol>
  *
- * <h3>Prerequisites</h3>
- * <ul>
- *   <li>Application running with admin endpoints enabled ({@code make start}).
- *   <li>Admin credentials set via {@code -DadminUser=...} and {@code -DadminPass=...}.
- *   <li>Seed key version ID known — pass as {@code -DseedKeyVersionId=<UUID>}.
- * </ul>
+ * <h3>Important: start the app fresh before this simulation</h3>
+ * The {@code before()} hook resets key_versions in the database but cannot reset the
+ * application's in-memory key ring. If the app has already completed a rotation the ring
+ * holds a different active key than what the DB reset expects. Always run
+ * {@code make start} (fresh app start) immediately before this simulation.
  *
- * <h3>Run</h3>
+ * <h3>How to run</h3>
  * <pre>
- *   mvn gatling:test -P gatling-tests \
- *     -DsimulationClass=com.yourorg.tokenisation.RotationSimulation \
- *     -DtotalRequests=50000 \
- *     -DseedKeyVersionId=00000000-0000-0000-0000-000000000001
+ *   make start   # fresh start required — ring must match DB key state
+ *   make gatling-test GATLING_SIM=RotationSimulation GATLING_SCALE=20k
+ *   make gatling-test GATLING_SIM=RotationSimulation GATLING_SCALE=50k GATLING_DURATION=300
  * </pre>
  */
 public class RotationSimulation extends Simulation {
 
     /** Tokens to pre-seed for detokenisation requests during the simulation. */
     private static final int SEED_COUNT = 5_000;
-
-    private static final String SEED_KEY_VERSION_ID =
-            System.getProperty("seedKeyVersionId", "00000000-0000-0000-0000-000000000001");
 
     private static final String ADMIN_USER =
             System.getProperty("adminUser", "admin");
@@ -67,30 +66,36 @@ public class RotationSimulation extends Simulation {
             .acceptHeader("application/json")
             .contentTypeHeader("application/json");
 
-    // 70% tokenisation, 30% detokenisation — models a realistic mixed workload during rotation
-    private final ScenarioBuilder mixedTraffic = scenario("Mixed traffic during rotation")
-            .randomSwitch()
-            .on(
-                    percent(70.0).then(
-                            exec(http("POST /api/v1/tokens (rotation)")
-                                    .post("/api/v1/tokens")
-                                    .body(StringBody(session -> buildTokeniseBody()))
-                                    .check(status().is(201)))
-                    ),
-                    percent(30.0).then(
-                            feed(listFeeder(buildFeed()).circular())
-                                    .exec(http("GET /api/v1/tokens/{token} (rotation)")
-                                            .get(session -> "/api/v1/tokens/" + session.getString("token"))
-                                            .header("X-Merchant-ID", SimulationConfig.MERCHANT_ID)
-                                            .check(status().in(200, 404))) // 404 OK — token may have been rotated
-                    )
-            );
+    // 70% tokenise / 30% detokenise — models production traffic during a rotation window.
+    // Token for detokenise is chosen lazily at execution time (after before() seeds the list).
+    private final ScenarioBuilder tokeniseDuringRotation = scenario("POST /api/v1/tokens (rotation)")
+            .exec(http("POST /api/v1/tokens")
+                    .post("/api/v1/tokens")
+                    .body(StringBody(session -> buildTokeniseBody()))
+                    .check(status().is(201)));
+
+    private final ScenarioBuilder detokeniseDuringRotation = scenario("GET /api/v1/tokens/{token} (rotation)")
+            .exec(session -> session.set("token", randomSeededToken()))
+            .exec(http("GET /api/v1/tokens/{token}")
+                    .get(session -> "/api/v1/tokens/" + session.getString("token"))
+                    // Tokens are re-encrypted during rotation — they remain detokenisable throughout.
+                    // 404 is NOT expected here; it would indicate a data-loss bug.
+                    .check(status().is(200))
+                    .check(jsonPath("$.pan").exists()));
 
     {
+        int targetRps = Math.max(1, SimulationConfig.TOTAL_REQUESTS / SimulationConfig.SUSTAIN_SECONDS);
+        int tokeniseRps = Math.max(1, (int) (targetRps * 0.70));
+        int detokeniseRps = Math.max(1, targetRps - tokeniseRps);
+
         setUp(
-                mixedTraffic.injectOpen(
-                        rampUsers(SimulationConfig.MAX_USERS).during(SimulationConfig.RAMP_SECONDS),
-                        constantUsersPerSec(SimulationConfig.MAX_USERS).during(SimulationConfig.SUSTAIN_SECONDS)
+                tokeniseDuringRotation.injectOpen(
+                        rampUsersPerSec(1).to(tokeniseRps).during(SimulationConfig.RAMP_SECONDS),
+                        constantUsersPerSec(tokeniseRps).during(SimulationConfig.SUSTAIN_SECONDS)
+                ),
+                detokeniseDuringRotation.injectOpen(
+                        rampUsersPerSec(1).to(detokeniseRps).during(SimulationConfig.RAMP_SECONDS),
+                        constantUsersPerSec(detokeniseRps).during(SimulationConfig.SUSTAIN_SECONDS)
                 )
         ).protocols(protocol)
                 .assertions(
@@ -101,13 +106,20 @@ public class RotationSimulation extends Simulation {
 
     @Override
     public void before() {
-        System.out.printf("[RotationSimulation] Setting up: truncate + seed %d tokens + initiate rotation%n",
+        System.out.printf("[RotationSimulation] Setup: truncate + reset keys + seed %d tokens + trigger rotation%n",
                 SEED_COUNT);
         DbSetupHelper.truncate();
-        DbSetupHelper.resetKeyVersions(SEED_KEY_VERSION_ID);
+        DbSetupHelper.resetKeyVersions();
         seedTokensViaHttp(SEED_COUNT);
         triggerRotation();
-        System.out.println("[RotationSimulation] Setup complete — rotation in progress. Starting traffic.");
+        System.out.printf("[RotationSimulation] Setup complete — rotation in progress. " +
+                "Seeded %d tokens. Starting traffic (totalRequests=%d).%n",
+                seededTokens.size(), SimulationConfig.TOTAL_REQUESTS);
+    }
+
+    private String randomSeededToken() {
+        if (seededTokens.isEmpty()) return "no-token-seeded";
+        return seededTokens.get(ThreadLocalRandom.current().nextInt(seededTokens.size()));
     }
 
     private void triggerRotation() {
@@ -132,42 +144,45 @@ public class RotationSimulation extends Simulation {
 
     private void seedTokensViaHttp(int count) {
         java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+        ExecutorService exec = Executors.newFixedThreadPool(20);
+        List<Callable<Void>> tasks = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            try {
-                String pan = TokenisationSimulation.generateVisa16();
-                String body = String.format(
-                        "{\"pan\":\"%s\",\"tokenType\":\"ONE_TIME\",\"merchantId\":\"%s\"," +
-                        "\"cardScheme\":\"VISA\",\"expiryMonth\":12,\"expiryYear\":2029}",
-                        pan, SimulationConfig.MERCHANT_ID);
-                var req = java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(SimulationConfig.BASE_URL + "/api/v1/tokens"))
-                        .header("Content-Type", "application/json")
-                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
-                        .build();
-                var resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
-                if (resp.statusCode() == 201) {
-                    String token = extractToken(resp.body());
-                    if (token != null) seededTokens.add(token);
+            tasks.add(() -> {
+                try {
+                    String pan = TokenisationSimulation.generateVisa16();
+                    String body = String.format(
+                            "{\"pan\":\"%s\",\"cardScheme\":\"MC\",\"expiryMonth\":12,\"expiryYear\":2029}", pan);
+                    var req = java.net.http.HttpRequest.newBuilder()
+                            .uri(java.net.URI.create(SimulationConfig.BASE_URL + "/api/v1/tokens"))
+                            .header("Content-Type", "application/json")
+                            .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+                            .build();
+                    var resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+                    if (resp.statusCode() == 201) {
+                        String token = extractToken(resp.body());
+                        if (token != null) seededTokens.add(token);
+                    }
+                } catch (Exception e) {
+                    System.err.println("[RotationSimulation] Seed error: " + e.getMessage());
                 }
-            } catch (Exception e) {
-                System.err.println("[RotationSimulation] Seed error at " + i + ": " + e.getMessage());
-            }
+                return null;
+            });
+        }
+        try {
+            exec.invokeAll(tasks);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            exec.shutdown();
         }
         System.out.println("[RotationSimulation] Seeded " + seededTokens.size() + " tokens.");
-    }
-
-    private List<java.util.Map<String, Object>> buildFeed() {
-        List<java.util.Map<String, Object>> feed = new ArrayList<>(seededTokens.size());
-        for (String t : seededTokens) feed.add(java.util.Map.of("token", t));
-        return feed.isEmpty() ? List.of(java.util.Map.of("token", "placeholder")) : feed;
     }
 
     private static String buildTokeniseBody() {
         String pan = TokenisationSimulation.generateVisa16();
         return String.format(
-                "{\"pan\":\"%s\",\"tokenType\":\"ONE_TIME\",\"merchantId\":\"%s\"," +
-                "\"cardScheme\":\"VISA\",\"expiryMonth\":12,\"expiryYear\":2029}",
-                pan, SimulationConfig.MERCHANT_ID);
+                "{\"pan\":\"%s\",\"cardScheme\":\"MC\",\"expiryMonth\":12,\"expiryYear\":2029}",
+                pan);
     }
 
     private static String extractToken(String json) {

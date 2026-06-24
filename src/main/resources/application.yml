@@ -3,6 +3,14 @@ spring:
     url: ${DATASOURCE_URL}
     username: ${DATASOURCE_USER}
     password: ${DATASOURCE_PASSWORD}
+    hikari:
+      # Override via HIKARI_MAX_POOL_SIZE env var. Production should set this to match
+      # the DB server's max_connections budget. Local dev default covers Gatling load
+      # testing at ~333 rps with 2× headroom for GC spikes; rotation batch parallelism (8)
+      # needs pool ≥ 13 minimum.
+      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:60}
+      minimum-idle: 2
+      connection-timeout: 30000
   jpa:
     hibernate:
       # Flyway owns schema management — Hibernate validates only, never modifies
@@ -11,6 +19,11 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+  threads:
+    virtual:
+      # Virtual threads let Tomcat handle high concurrency without a fixed thread pool.
+      # Disabled by default; set VIRTUAL_THREADS_ENABLED=true for load testing.
+      enabled: ${VIRTUAL_THREADS_ENABLED:false}
 
 kms:
   # Supported values: aws | local-dev
@@ -33,29 +46,38 @@ kms:
 tokenisation:
   # Token format — UUID (default) or LUHN_16
   token-format: UUID
-  # HMAC-SHA256 hashing secret for PAN de-dup — separate from KEK
-  pan-hash-secret: ${PAN_HASH_SECRET}
+  # HMAC-SHA256 hashing secret for PAN de-dup (required on first boot; optional after HMAC key is seeded)
+  pan-hash-secret: ${PAN_HASH_SECRET:#{null}}
   # Default token lifetime (5 years)
   default-token-ttl-days: 1825
-  tamper-detection:
-    # HMAC-SHA256 signing secret for key_versions row integrity checks — separate from KEK and PAN hash secret
-    signing-secret: ${TAMPER_DETECTION_SECRET}
+  # Accepted card scheme codes — add entries here to enable additional schemes without code changes
+  allowed-card-schemes:
+    - MC
 
 detokenisation:
   rate-limit:
-    per-merchant-per-minute: 1000
     per-service-per-minute: 10000
 
 rotation:
+  ring-refresh:
+    # Sync each pod's in-memory key ring against DB every 60 seconds.
+    # Corrects stale rings after rotation initiated on a different pod.
+    cron: "0 * * * * *"
   batch:
     # Run rotation batch every 15 minutes
     cron: "0 */15 * * * *"
     size: 500
     # Smaller batches during emergency rotation for faster re-encryption
     emergency-size: 100
-    # Parallel virtual threads for DEK rewrap within one batch (must be ≤ hikari pool − 5)
+    # Parallel virtual threads for DEK rewrap within one batch (must be ≤ HIKARI_MAX_POOL_SIZE − 5)
     parallelism: 8
     # 0 = drain all remaining records in one cron invocation; positive = cap batches per tick
+    max-batches-per-run: 0
+  hmac-batch:
+    # Run HMAC rotation batch at 02:00 UTC (off-peak)
+    cron: "0 0 2 * * *"
+    size: 100
+    parallelism: 4
     max-batches-per-run: 0
   compliance:
     max-key-age-days: 365
@@ -71,6 +93,23 @@ springdoc:
     path: /swagger-ui.html
     tags-sorter: alpha
     operations-sorter: alpha
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: card-tokenisation
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5,0.95,0.99
 
 logging:
   level:

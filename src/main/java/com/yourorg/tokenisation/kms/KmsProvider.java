@@ -17,8 +17,8 @@ package com.yourorg.tokenisation.kms;
  * <p>KMS calls are intentionally minimised:
  * <ul>
  *   <li>{@link #unwrapKek} is called once per key version at startup only
- *   <li>{@link #generateDek} is not called — DEKs are generated locally using {@code SecureRandom}
- *       and wrapped in-process using the in-memory KEK
+ *   <li>DEKs are not generated via KMS — they are generated locally using {@code SecureRandom}
+ *       and wrapped in-process using {@link #wrapDek} with the in-memory KEK
  *   <li>{@link #rewrapDek} is called only during key rotation, not during normal tokenisation
  * </ul>
  */
@@ -28,7 +28,7 @@ public interface KmsProvider {
      * Decrypts a stored KEK ciphertext blob and returns the raw KEK bytes.
      *
      * <p>Called once per key version at application startup by {@code KeyRingInitialiser}.
-     * The returned bytes are held in the {@code InMemoryKeyRing} for the application's lifetime
+     * The returned bytes are held in the {@code InMemoryKekKeyRing} for the application's lifetime
      * (or until TTL refresh). The caller is responsible for not logging the returned bytes.
      *
      * @param encryptedKekBlob Base64-encoded KEK ciphertext as stored in {@code key_versions.encrypted_kek_blob};
@@ -38,6 +38,22 @@ public interface KmsProvider {
      * @throws KmsOperationException    if the KMS call fails or the blob cannot be decrypted
      */
     byte[] unwrapKek(String encryptedKekBlob);
+
+    /**
+     * Encrypts a freshly generated KEK under the KMS master key and returns the blob for storage.
+     *
+     * <p>Used exclusively by {@code KeyRotationService} when initiating a scheduled or emergency
+     * rotation to persist genuinely new key material. The returned string is stored verbatim in
+     * {@code key_versions.encrypted_kek_blob} and can later be reversed by {@link #unwrapKek}.
+     *
+     * <p>Callers must zero {@code plaintextKek} immediately after this method returns.
+     *
+     * @param plaintextKek the raw 32-byte KEK to protect; must not be null; must be exactly 32 bytes
+     * @return the KMS-encrypted KEK blob, Base64-encoded, safe for storage as TEXT
+     * @throws IllegalArgumentException if {@code plaintextKek} is not 32 bytes
+     * @throws KmsOperationException    if the KMS call fails
+     */
+    String wrapNewKek(byte[] plaintextKek);
 
     /**
      * Wraps a locally generated DEK under the current KEK and returns the encrypted blob for storage.
@@ -69,9 +85,36 @@ public interface KmsProvider {
     byte[] rewrapDek(byte[] encryptedDek, String oldKeyVersionId, String newKeyVersionId);
 
     /**
+     * Encrypts a freshly generated HMAC secret under the KMS master key for storage.
+     *
+     * <p>Uses encryption context {@code purpose=hmac-key}, distinct from {@code purpose=kek-unwrap},
+     * so that a blob encrypted by this method cannot be decrypted via {@link #unwrapKek} and vice versa.
+     * The HMAC secret is protected directly by the CMK — independent of the application KEK.
+     *
+     * <p>Callers must zero {@code plaintextHmacKey} immediately after this method returns.
+     *
+     * @param plaintextHmacKey the raw HMAC secret bytes to protect; must not be null
+     * @return the KMS-encrypted HMAC secret blob, suitable for storage as BYTEA in {@code key_versions.encrypted_secret}
+     * @throws KmsOperationException if the KMS call fails
+     */
+    byte[] wrapNewHmacKey(byte[] plaintextHmacKey);
+
+    /**
+     * Decrypts a stored HMAC secret blob and returns the raw secret bytes.
+     *
+     * <p>Called once per HMAC key version at startup by {@code KeyRingInitialiser}.
+     * The caller must zero the returned array immediately after loading it into the HMAC ring.
+     *
+     * @param encryptedHmacBlob the KMS ciphertext as stored in {@code key_versions.encrypted_secret}; must not be null
+     * @return the raw HMAC secret bytes; caller must zero after use
+     * @throws KmsOperationException if the KMS call fails or the blob is invalid
+     */
+    byte[] unwrapHmacKey(byte[] encryptedHmacBlob);
+
+    /**
      * Retrieves metadata for a KMS key by its internal identifier.
      *
-     * <p>Used by the tamper reconciliation job to validate that the local
+     * <p>Used for operational health checks to validate that the local
      * {@code key_versions} record is consistent with the KMS source of truth.
      *
      * @param kmsKeyId the KMS-internal key identifier (e.g. AWS KMS key ARN); must not be null

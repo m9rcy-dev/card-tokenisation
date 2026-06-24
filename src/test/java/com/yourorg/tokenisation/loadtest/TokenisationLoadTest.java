@@ -2,7 +2,6 @@ package com.yourorg.tokenisation.loadtest;
 
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.domain.TokenType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -33,8 +32,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("load")
 class TokenisationLoadTest extends AbstractLoadTest {
-
-    private static final String MERCHANT = "LOAD_MERCHANT_TOK";
 
     @Autowired private TestRestTemplate restTemplate;
     @Autowired private JdbcTemplate jdbcTemplate;
@@ -139,8 +136,6 @@ class TokenisationLoadTest extends AbstractLoadTest {
     private TokeniseRequest buildRequest(String pan) {
         TokeniseRequest r = new TokeniseRequest();
         r.setPan(pan);
-        r.setTokenType(TokenType.ONE_TIME);
-        r.setMerchantId(MERCHANT);
         r.setCardScheme("VISA");
         r.setExpiryMonth(12);
         r.setExpiryYear(2027);

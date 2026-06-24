@@ -1,0 +1,28 @@
+meta {
+  name: Replace card - 404 token not found
+  type: http
+  seq: 7
+}
+
+patch {
+  url: {{baseUrl}}/api/v1/tokens/00000000-0000-0000-0000-000000000000
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "pan": "5105105105105100",
+    "cardScheme": "MC",
+    "expiryMonth": 6,
+    "expiryYear": 2029
+  }
+}
+
+assert {
+  res.status: eq 404
+}

@@ -1,7 +1,7 @@
 meta {
-  name: Tokenise PAN (RECURRING) - dedup returns same token
+  name: Tokenise PAN - dedup returns same token
   type: http
-  seq: 3
+  seq: 2
 }
 
 post {
@@ -16,16 +16,14 @@ headers {
 
 body:json {
   {
-    "pan": "5555555555554444",
+    "pan": "5500005555555559",
     "expiryMonth": 6,
     "expiryYear": 2028,
-    "cardScheme": "MASTERCARD",
-    "tokenType": "RECURRING",
-    "merchantId": "{{merchantId}}"
+    "cardScheme": "MC"
   }
 }
 
 assert {
   res.status: eq 201
-  res.body.token: eq {{recurringToken}}
+  res.body.token: eq {{token}}
 }

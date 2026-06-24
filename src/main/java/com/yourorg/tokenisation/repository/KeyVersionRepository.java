@@ -13,70 +13,71 @@ import java.util.UUID;
 /**
  * Repository for {@link KeyVersion} entities stored in the {@code key_versions} table.
  *
- * <p>All query methods operate in read mode. Mutations to {@code KeyVersion} state
- * (status transitions) are performed via entity methods and flushed by JPA —
- * no bulk update queries are used here to preserve optimistic locking.
+ * <p>Both KEK and HMAC versions are stored in the same table. Query methods are
+ * scoped by {@code key_type} where it matters — startup loaders, rotation services,
+ * and admin endpoints all work with type-specific subsets.
  */
 public interface KeyVersionRepository extends JpaRepository<KeyVersion, UUID> {
 
-    /**
-     * Finds all key versions whose status is in the given set.
-     *
-     * <p>Used at startup by {@code KeyRingInitialiser} to load all {@code ACTIVE}
-     * and {@code ROTATING} key versions into the in-memory key ring.
-     *
-     * @param statuses the set of statuses to include; must not be null or empty
-     * @return all matching key versions, ordered by {@code activatedAt} ascending
-     */
-    @Query("SELECT kv FROM KeyVersion kv WHERE kv.status IN :statuses ORDER BY kv.activatedAt ASC")
-    List<KeyVersion> findByStatusIn(@Param("statuses") List<KeyStatus> statuses);
+    // ── KEK queries ───────────────────────────────────────────────────────────
 
     /**
-     * Returns the single {@code ACTIVE} key version.
-     *
-     * <p>The database enforces at most one {@code ACTIVE} key at a time via
-     * {@code idx_key_versions_single_active} (partial unique index on status = 'ACTIVE').
-     *
-     * @return the active key version, or empty if none exists
+     * Finds all KEK versions whose status is in the given set.
+     * Used by {@code KeyRingInitialiser} to load all ACTIVE and ROTATING KEKs at startup.
      */
-    @Query("SELECT kv FROM KeyVersion kv WHERE kv.status = 'ACTIVE'")
-    Optional<KeyVersion> findActive();
+    @Query("""
+            SELECT kv FROM KeyVersion kv
+            WHERE kv.keyType = 'KEK' AND kv.status IN :statuses
+            ORDER BY kv.activatedAt ASC
+            """)
+    List<KeyVersion> findKekByStatusIn(@Param("statuses") List<KeyStatus> statuses);
 
     /**
-     * Returns the single {@code ACTIVE} key version, throwing if none is found.
-     *
-     * <p>Used during startup initialisation and tokenisation. An absent active key
-     * indicates a misconfigured or partially rotated system.
-     *
-     * @return the active key version
-     * @throws IllegalStateException if no active key version exists in the database
+     * Returns the single ACTIVE KEK version.
+     * The partial unique index enforces at most one ACTIVE KEK at a time.
      */
-    default KeyVersion findActiveOrThrow() {
-        return findActive().orElseThrow(() ->
-                new IllegalStateException("No ACTIVE key version found in key_versions table"));
+    @Query("SELECT kv FROM KeyVersion kv WHERE kv.keyType = 'KEK' AND kv.status = 'ACTIVE'")
+    Optional<KeyVersion> findActiveKek();
+
+    default KeyVersion findActiveKekOrThrow() {
+        return findActiveKek().orElseThrow(() ->
+                new IllegalStateException("No ACTIVE KEK version found in key_versions table"));
     }
 
     /**
-     * Finds the oldest key version currently in {@code ROTATING} status.
-     *
-     * <p>Used by the rotation batch job to determine which key version's tokens
-     * still need re-encryption. "Oldest rotating" is used to process rotations in order.
-     *
-     * @return the oldest rotating key version, or empty if no rotation is in progress
+     * Finds the oldest KEK version currently requiring token migration
+     * (ROTATING for scheduled, COMPROMISED for emergency rotation).
      */
-    @Query("SELECT kv FROM KeyVersion kv WHERE kv.status = 'ROTATING' ORDER BY kv.activatedAt ASC")
-    Optional<KeyVersion> findOldestRotating();
+    @Query("""
+            SELECT kv FROM KeyVersion kv
+            WHERE kv.keyType = 'KEK' AND kv.status IN ('ROTATING', 'COMPROMISED')
+            ORDER BY kv.activatedAt ASC
+            """)
+    Optional<KeyVersion> findOldestPendingMigration();
+
+    // ── HMAC queries ──────────────────────────────────────────────────────────
 
     /**
-     * Finds the oldest key version requiring token migration — either {@code ROTATING} (scheduled)
-     * or {@code COMPROMISED} (emergency rotation).
-     *
-     * <p>Both statuses indicate that tokens on this key version must be re-encrypted to the
-     * current {@code ACTIVE} key. {@code ROTATING} is used by scheduled rotation;
-     * {@code COMPROMISED} by emergency rotation. The batch job processes either.
-     *
-     * @return the oldest key version pending migration, or empty if none exists
+     * Finds all HMAC versions whose status is in the given set.
+     * Used by {@code KeyRingInitialiser} to load ACTIVE and ROTATING HMAC secrets at startup.
      */
-    @Query("SELECT kv FROM KeyVersion kv WHERE kv.status IN ('ROTATING', 'COMPROMISED') ORDER BY kv.activatedAt ASC")
-    Optional<KeyVersion> findOldestPendingMigration();
+    @Query("""
+            SELECT kv FROM KeyVersion kv
+            WHERE kv.keyType = 'HMAC' AND kv.status IN :statuses
+            ORDER BY kv.activatedAt ASC
+            """)
+    List<KeyVersion> findHmacByStatusIn(@Param("statuses") List<KeyStatus> statuses);
+
+    /**
+     * Returns the single ACTIVE HMAC version.
+     * The partial unique index enforces at most one ACTIVE HMAC at a time.
+     */
+    @Query("SELECT kv FROM KeyVersion kv WHERE kv.keyType = 'HMAC' AND kv.status = 'ACTIVE'")
+    Optional<KeyVersion> findActiveHmac();
+
+    default KeyVersion findActiveHmacOrThrow() {
+        return findActiveHmac().orElseThrow(() ->
+                new IllegalStateException("No ACTIVE HMAC key version found in key_versions table"));
+    }
+
 }

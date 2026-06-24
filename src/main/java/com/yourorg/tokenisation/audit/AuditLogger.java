@@ -58,21 +58,19 @@ public class AuditLogger {
      * <p>Runs in its own database transaction ({@code REQUIRES_NEW}), independent of
      * any enclosing transaction. Never throws — exceptions are logged at {@code ERROR}.
      *
-     * @param eventType   the type of event that succeeded; must not be null
-     * @param tokenId     the affected token's vault ID; may be {@code null} for key-level events
-     * @param merchantId  the merchant scope of the event; may be {@code null}
-     * @param actorId     identity of the calling service or user; may be {@code null}
-     * @param actorIp     IP address of the caller; may be {@code null}
-     * @param metadata    optional structured extras; must not contain PAN; may be {@code null}
+     * @param eventType  the type of event that succeeded; must not be null
+     * @param tokenId    the affected token's vault ID; may be {@code null} for key-level events
+     * @param actorId    identity of the calling service or user; may be {@code null}
+     * @param actorIp    IP address of the caller; may be {@code null}
+     * @param metadata   optional structured extras; must not contain PAN; may be {@code null}
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void logSuccess(AuditEventType eventType,
                            UUID tokenId,
-                           String merchantId,
                            String actorId,
                            String actorIp,
                            Map<String, Object> metadata) {
-        writeAuditRecord(eventType, tokenId, null, actorId, actorIp, merchantId,
+        writeAuditRecord(eventType, tokenId, null, actorId, actorIp,
                 OUTCOME_SUCCESS, null, metadata);
     }
 
@@ -87,7 +85,6 @@ public class AuditLogger {
      *
      * @param eventType     the type of event that failed; must not be null
      * @param tokenId       the affected token's vault ID; may be {@code null}
-     * @param merchantId    the merchant scope; may be {@code null}
      * @param actorId       identity of the caller; may be {@code null}
      * @param actorIp       IP address of the caller; may be {@code null}
      * @param failureReason human-readable failure description; must not contain PAN
@@ -96,12 +93,11 @@ public class AuditLogger {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void logFailure(AuditEventType eventType,
                            UUID tokenId,
-                           String merchantId,
                            String actorId,
                            String actorIp,
                            String failureReason,
                            Map<String, Object> metadata) {
-        writeAuditRecord(eventType, tokenId, null, actorId, actorIp, merchantId,
+        writeAuditRecord(eventType, tokenId, null, actorId, actorIp,
                 OUTCOME_FAILURE, failureReason, metadata);
     }
 
@@ -125,7 +121,7 @@ public class AuditLogger {
                             String outcome,
                             String failureReason,
                             Map<String, Object> metadata) {
-        writeAuditRecord(eventType, null, keyVersionId, null, null, null,
+        writeAuditRecord(eventType, null, keyVersionId, null, null,
                 outcome, failureReason, metadata);
     }
 
@@ -140,7 +136,6 @@ public class AuditLogger {
      * @param keyVersionId  the affected key version; may be null
      * @param actorId       the caller identity; may be null
      * @param actorIp       the caller IP; may be null
-     * @param merchantId    the merchant scope; may be null
      * @param outcome       SUCCESS or FAILURE
      * @param failureReason description of failure; null on success
      * @param metadata      additional structured data; may be null
@@ -150,7 +145,6 @@ public class AuditLogger {
                                   UUID keyVersionId,
                                   String actorId,
                                   String actorIp,
-                                  String merchantId,
                                   String outcome,
                                   String failureReason,
                                   Map<String, Object> metadata) {
@@ -161,7 +155,6 @@ public class AuditLogger {
                     .keyVersionId(keyVersionId)
                     .actorId(actorId)
                     .actorIp(actorIp)
-                    .merchantId(merchantId)
                     .outcome(outcome)
                     .failureReason(failureReason)
                     .metadata(metadata)

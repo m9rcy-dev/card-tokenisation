@@ -1,22 +1,23 @@
 package com.yourorg.tokenisation.exception;
 
 /**
- * Thrown when tampering is detected on a key version record in {@code key_versions}.
+ * Thrown when a cryptographic integrity check fails during detokenisation.
  *
- * <p>The {@code TamperDetector} computes an HMAC-SHA256 over the key version's
- * immutable fields and compares it against the stored {@code checksum}. Any mismatch
- * indicates that the row was modified outside of the application, which constitutes
- * a tamper event.
- *
- * <p>When this exception is thrown:
+ * <p>Two conditions raise this exception:
  * <ol>
- *   <li>A {@code TAMPER_ALERT} record must be written to {@code token_audit_log}.
- *   <li>The key version must be marked {@code COMPROMISED} in the key ring.
- *   <li>All detokenisation operations using this key version must be blocked.
+ *   <li><strong>Compromised key</strong> — the key ring marks the key version as
+ *       {@code COMPROMISED} (e.g. after an emergency rotation). Detokenisation is
+ *       blocked immediately to prevent further data exposure.
+ *   <li><strong>GCM auth tag failure</strong> — AES-256-GCM authentication tag
+ *       verification fails during decryption, meaning the stored ciphertext or IV
+ *       was modified outside the application.
  * </ol>
  *
+ * <p>When this exception is thrown a {@code TAMPER_ALERT} record is written to
+ * {@code token_audit_log} and a {@code 500} is returned to the caller.
+ *
  * <p>The exception message may include the key version ID (a UUID, not sensitive)
- * but must never include HMAC values, key bytes, or PAN data.
+ * but must never include key bytes or PAN data.
  */
 public class KeyIntegrityException extends TokenisationException {
 

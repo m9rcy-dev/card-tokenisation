@@ -35,8 +35,15 @@ detokenisation:
   rate-limit:
     # Effectively disable rate limiting so it does not interfere with throughput measurements.
     # Rate-limit behaviour is tested separately in DetokenisationIntegrationTest.
-    per-merchant-per-minute: 99999999
     per-service-per-minute: 99999999
+
+rotation:
+  batch:
+    # Limit rotation threads during load tests so the 8-thread production default
+    # does not crowd out the 20 live-traffic virtual threads on the shared DB connection
+    # pool.  2 threads still saturates the pool adequately for throughput measurement
+    # while keeping write-IO contention below the 20% degradation threshold.
+    parallelism: 2
 
 logging:
   level:

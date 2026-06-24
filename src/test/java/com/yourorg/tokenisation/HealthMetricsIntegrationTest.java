@@ -4,15 +4,11 @@ import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.HealthResponse;
 import com.yourorg.tokenisation.api.response.MetricsResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.domain.TokenType;
 import com.yourorg.tokenisation.monitoring.MetricsCollector;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -36,8 +32,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HealthMetricsIntegrationTest extends AbstractIntegrationTest {
 
     private static final String VISA_PAN = "4111111111111111";
-    private static final String MERCHANT_A = "HEALTH_MERCHANT";
-
     @Autowired private TestRestTemplate restTemplate;
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private MetricsCollector metricsCollector;
@@ -51,13 +45,13 @@ class HealthMetricsIntegrationTest extends AbstractIntegrationTest {
         Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 60 * 60));
         jdbcTemplate.update("""
                 INSERT INTO key_versions (id, kms_key_id, kms_provider, key_alias, encrypted_kek_blob,
-                    status, activated_at, rotate_by, created_by, checksum)
-                VALUES (?::uuid, ?, ?, ?, ?, ?, now(), ?, ?, ?)
+                    key_type, status, activated_at, rotate_by, created_by)
+                VALUES (?::uuid, ?, ?, ?, ?, ?, ?, now(), ?, ?)
                 ON CONFLICT (id) DO NOTHING
                 """,
                 SEED_KEY_VERSION_ID, "local-dev-key", "LOCAL_DEV",
-                "integration-test-seed-key", "ignored", "ACTIVE",
-                rotateBy, "test-seeder", "seed-checksum");
+                "integration-test-seed-key", "ignored", "KEK", "ACTIVE",
+                rotateBy, "test-seeder");
     }
 
     // ── Health ────────────────────────────────────────────────────────────────
@@ -142,13 +136,7 @@ class HealthMetricsIntegrationTest extends AbstractIntegrationTest {
         long before = metricsCollector.getDetokeniseRequests();
 
         // Detokenise
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("X-Merchant-ID", MERCHANT_A);
-        restTemplate.exchange(
-                "/api/v1/tokens/" + token,
-                HttpMethod.GET,
-                new HttpEntity<>(headers),
-                String.class);
+        restTemplate.getForEntity("/api/v1/tokens/" + token, String.class);
 
         ResponseEntity<MetricsResponse> metrics =
                 restTemplate.getForEntity("/api/v1/metrics", MetricsResponse.class);
@@ -183,8 +171,6 @@ class HealthMetricsIntegrationTest extends AbstractIntegrationTest {
     private TokeniseRequest buildRequest(String pan) {
         TokeniseRequest r = new TokeniseRequest();
         r.setPan(pan);
-        r.setTokenType(TokenType.ONE_TIME);
-        r.setMerchantId(MERCHANT_A);
         r.setCardScheme("VISA");
         r.setExpiryMonth(12);
         r.setExpiryYear(2027);

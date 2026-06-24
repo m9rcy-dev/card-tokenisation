@@ -1,0 +1,29 @@
+# LocalStack profile — activated by SPRING_PROFILES_ACTIVE=localstack (make run-localstack).
+# Configures the app to talk to a LocalStack KMS container with seed credentials.
+# KMS key ARN, endpoint, and datasource are supplied via environment variables by the Makefile.
+# AwsKeySeeder seeds the initial KEK and HMAC rows on first boot (kms.aws.seed-on-startup=true).
+
+kms:
+  provider: aws
+  aws:
+    region: ${AWS_REGION:ap-southeast-2}
+    master-key-arn: ${AWS_KMS_KEY_ARN}
+    endpoint-override: ${KMS_AWS_ENDPOINT_OVERRIDE:}
+    seed-on-startup: true
+
+spring:
+  datasource:
+    url: ${DATASOURCE_URL}
+    username: ${DATASOURCE_USER}
+    password: ${DATASOURCE_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+tokenisation:
+  pan-hash-secret: ${PAN_HASH_SECRET:#{null}}
+
+logging:
+  level:
+    com.yourorg.tokenisation: INFO
+    software.amazon.awssdk: WARN

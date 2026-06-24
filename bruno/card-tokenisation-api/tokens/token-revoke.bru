@@ -1,0 +1,21 @@
+meta {
+  name: Revoke token
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/tokens/{{token}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+}
+
+script:post-response {
+  if (res.status === 204) {
+    bru.setVar("token", "");
+  }
+}

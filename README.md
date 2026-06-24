@@ -9,6 +9,10 @@ Replaces raw PANs (Primary Account Numbers) with opaque, irreversible tokens. Su
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+  - [Running locally (terminal)](#running-locally-terminal)
+  - [Running with LocalStack from terminal](#running-with-localstack-from-terminal-no-ide-needed)
+  - [Running from an IDE](#running-from-an-ide)
+  - [Running with real AWS KMS](#running-with-real-aws-kms)
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
 - [Running Tests](#running-tests)
@@ -27,7 +31,7 @@ Replaces raw PANs (Primary Account Numbers) with opaque, irreversible tokens. Su
 
 - Java 21 (`JAVA_HOME` must point to a Java 21 JDK)
 - Maven 3.9+
-- Docker (for Testcontainers in tests)
+- Docker (for PostgreSQL container and Testcontainers in tests)
 
 ```bash
 # Verify Java version
@@ -37,34 +41,196 @@ java -version   # must be 21
 JAVA_HOME=/opt/homebrew/opt/openjdk@21 mvn -version
 ```
 
-### Running locally
+### Running locally (terminal)
+
+The simplest path — one command starts PostgreSQL, runs Flyway migrations, and boots the app using the built-in local-dev KMS (no AWS account or LocalStack required):
 
 ```bash
-# 1. Set required environment variables
-export DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
-export DATASOURCE_USER=tokenisation_app
-export DATASOURCE_PASSWORD=change_me
-export PAN_HASH_SECRET=your-32-byte-secret-here!!!!!!!!
-export TAMPER_DETECTION_SECRET=another-32-byte-secret-here!!!!!
-export KMS_PROVIDER=local-dev
-
-# 2. Start with local dev KMS (no AWS needed)
-JAVA_HOME=/opt/homebrew/opt/openjdk@21 mvn spring-boot:run
+make start
 ```
 
-The application starts on port 8080. Swagger UI is available at:
-```
-http://localhost:8080/swagger-ui.html
-```
+The application starts on port 8080. Swagger UI: `http://localhost:8080/swagger-ui.html`
 
-### Running with AWS KMS
+To stop: `Ctrl+C` to kill the app, then `make stop-postgres` to remove the container.
+
+---
+
+### Running with LocalStack from terminal (no IDE needed)
+
+Use this when you want to test the full AWS KMS code path (real `kms:Encrypt`/`kms:Decrypt` calls, `EncryptionContext` enforcement, CloudTrail-style audit) from the terminal — no IDE required.
+
+#### Option 1 — Single command (recommended)
+
+One command starts PostgreSQL, LocalStack, creates the KMS key, and boots the app:
 
 ```bash
-export KMS_PROVIDER=aws
-export AWS_REGION=ap-southeast-2
-export AWS_KMS_KEY_ARN=arn:aws:kms:ap-southeast-2:123456789012:key/your-key-id
-# Use IAM role — do not set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in production
+make localstack-full
 ```
+
+The app starts on port 8080 pointed at LocalStack KMS. When you're done:
+
+```bash
+Ctrl+C                  # stop the Spring Boot app
+make stop-localstack    # tear down Postgres and LocalStack containers
+```
+
+#### Option 2 — Two-step (useful when you want to inspect LocalStack before starting the app)
+
+```bash
+# Step 1: start infrastructure (Postgres + LocalStack + KMS key creation)
+make start-localstack
+```
+
+This prints the key ARN when the init hook completes:
+```
+LocalStack KMS ready. Key ARN: arn:aws:kms:ap-southeast-2:000000000000:key/<uuid>
+```
+
+```bash
+# Step 2: start the Spring Boot app (ARN is read automatically from LocalStack)
+make run-localstack
+```
+
+`run-localstack` reads the ARN directly from the LocalStack container — no copy-paste required.
+
+To tear down:
+```bash
+make stop-localstack    # stops and removes both Postgres and LocalStack
+```
+
+> **Note:** the KMS key ARN changes every time the LocalStack container is recreated. `make run-localstack` and `make localstack-full` always read the current ARN automatically. If you run the app from your IDE instead, see Option B below for how to copy the ARN.
+
+---
+
+### Running from an IDE
+
+Use this when you want to attach a debugger or set breakpoints. Two KMS options are available.
+
+#### Option A — Local-dev KMS (simplest, no AWS)
+
+Uses an in-process software KMS. No AWS account, no Docker KMS container needed.
+
+**Step 1:** Start PostgreSQL:
+```bash
+make start-postgres   # starts the container and waits until ready
+```
+
+Flyway migrations run automatically when the Spring Boot app starts.
+
+**Step 2:** Set these environment variables in your IDE run configuration:
+
+```
+DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
+DATASOURCE_USER=tokenisation_app
+DATASOURCE_PASSWORD=local-dev-password
+KMS_PROVIDER=local-dev
+KMS_LOCAL_DEV_KEK_HEX=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+HIKARI_MAX_POOL_SIZE=60
+VIRTUAL_THREADS_ENABLED=true
+```
+
+> `PAN_HASH_SECRET` is no longer required — the HMAC secret is seeded automatically by `LocalDevHmacKeySeeder` at startup.
+
+**Step 3:** Run the `TokenisationApplication` main class from your IDE.
+
+> In IntelliJ: **Run → Edit Configurations → Environment variables** — click the `...` button to paste multiple `KEY=VALUE` lines at once.
+
+---
+
+#### Option B — LocalStack KMS (real AWS KMS API, local) via IDE
+
+> **Prefer the terminal?** Use `make localstack-full` instead — it handles the ARN automatically and requires no IDE setup. See [Running with LocalStack from terminal](#running-with-localstack-from-terminal-no-ide-needed) above.
+
+**Step 1:** Start PostgreSQL, LocalStack, and create the KMS key:
+```bash
+make start-localstack
+```
+
+This prints the key ARN when the init hook completes:
+```
+LocalStack KMS ready. Key ARN: arn:aws:kms:ap-southeast-2:000000000000:key/<uuid>
+```
+
+Copy the ARN to your clipboard:
+```bash
+docker compose -f docker-compose-localstack.yml exec -T localstack \
+  cat /tmp/localstack/kms-key-arn | pbcopy
+```
+
+**Step 2:** Set these environment variables in your IDE run configuration:
+
+```
+SPRING_PROFILES_ACTIVE=localstack
+AWS_KMS_KEY_ARN=<paste ARN here>
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+KMS_AWS_ENDPOINT_OVERRIDE=http://localhost:4566
+DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
+DATASOURCE_USER=tokenisation_app
+DATASOURCE_PASSWORD=local-dev-password
+HIKARI_MAX_POOL_SIZE=60
+VIRTUAL_THREADS_ENABLED=true
+```
+
+> `AWS_REGION` is not required — the `localstack` profile defaults it to `ap-southeast-2`.
+> `PAN_HASH_SECRET` is no longer required — HMAC secrets are seeded via KMS directly at startup.
+
+**Step 3:** Run the `TokenisationApplication` main class from your IDE.
+
+**Stopping:**
+```bash
+make stop-localstack   # stops and removes both Postgres and LocalStack containers
+```
+
+> **Note:** the KMS key ARN changes every time you recreate the LocalStack container. Update `AWS_KMS_KEY_ARN` in your IDE run config after each `make stop-localstack && make start-localstack`. If using the terminal (`make localstack-full` or `make run-localstack`), the ARN is read automatically — no update needed.
+
+---
+
+### Running with real AWS KMS
+
+Use this when you have created an AWS KMS key and want to connect the app directly — for example, using an IAM user with static credentials for local testing.
+
+**Step 1:** Set these environment variables in your IDE run configuration:
+
+```
+AWS_KMS_KEY_ARN=arn:aws:kms:ap-southeast-2:<account-id>:key/<key-id>
+AWS_REGION=ap-southeast-2
+AWS_ACCESS_KEY_ID=<your-access-key>
+AWS_SECRET_ACCESS_KEY=<your-secret-key>
+DATASOURCE_URL=jdbc:postgresql://localhost:5432/tokenisation
+DATASOURCE_USER=tokenisation_app
+DATASOURCE_PASSWORD=local-dev-password
+KMS_AWS_SEED_ON_STARTUP=true
+HIKARI_MAX_POOL_SIZE=60
+VIRTUAL_THREADS_ENABLED=true
+```
+
+> **`KMS_AWS_SEED_ON_STARTUP=true`** tells `AwsKeySeeder` to create the initial KEK and HMAC rows on first boot. It is idempotent — if rows already exist the seeder skips silently. Remove it (or set to `false`) once your database has been seeded, or leave it on — it is safe to keep enabled for dev environments.
+
+> **No Spring profile needed.** Do not set `SPRING_PROFILES_ACTIVE` — the default profile uses `kms.provider=aws` via the `AWS_KMS_KEY_ARN` env var. Setting `localstack` profile would point the endpoint at `localhost:4566`.
+
+> **IAM user vs session credentials.** Static IAM user credentials (access key + secret only) do not need `AWS_SESSION_TOKEN`. SSO or assumed-role credentials require `AWS_SESSION_TOKEN` and expire — obtain them via `aws sts get-session-token` or your SSO login flow.
+
+**Step 2:** Start PostgreSQL:
+```bash
+make start-postgres
+```
+
+**Step 3:** Run the `TokenisationApplication` main class from your IDE. On first boot you will see:
+```
+AwsKeySeeder: seeding initial KEK via AWS KMS
+AwsKeySeeder: seeded ACTIVE KEK [<uuid>]
+AwsKeySeeder: seeding initial HMAC key
+AwsKeySeeder: seeded ACTIVE HMAC [<uuid>]
+```
+
+On subsequent restarts the seeder detects existing rows and skips:
+```
+AwsKeySeeder: ACTIVE KEK already present — skipping
+AwsKeySeeder: ACTIVE HMAC already present — skipping
+```
+
+> **Production note:** never set `KMS_AWS_SEED_ON_STARTUP=true` in production. Production key material must be provisioned via a controlled key ceremony, not auto-seeded on startup.
 
 ---
 
@@ -79,12 +245,10 @@ POST /api/v1/tokens
 Content-Type: application/json
 
 {
-  "pan": "4111111111111111",
+  "pan": "5500005555555559",
   "expiryMonth": 12,
   "expiryYear": 2027,
-  "cardScheme": "VISA",
-  "tokenType": "ONE_TIME",
-  "merchantId": "MERCHANT_001"
+  "cardScheme": "MC"
 }
 ```
 
@@ -92,41 +256,47 @@ Content-Type: application/json
 ```json
 {
   "token": "3a4f9d2e-1b5c-4f8a-a3e7-c6d9f0b2a1e4",
-  "tokenType": "ONE_TIME",
-  "lastFour": "1111",
-  "cardScheme": "VISA",
+  "lastFour": "5559",
+  "cardScheme": "MC",
   "createdAt": "2026-04-17T00:00:00Z"
 }
 ```
 
-**Token types:**
-- `ONE_TIME` — unique token per request (e.g. one-off payment)
-- `RECURRING` — deterministic; same PAN + merchant always returns the same token (e.g. subscription billing)
+The vault is deterministic — the same PAN always returns the same token. Calling this endpoint twice with the same PAN returns the same token value with a single vault record.
+
+`cardScheme` must be in the configured allowlist (`tokenisation.allowed-card-schemes`). Unrecognised values return `400`.
 
 ### Detokenise a token
 
 ```http
 GET /api/v1/tokens/3a4f9d2e-1b5c-4f8a-a3e7-c6d9f0b2a1e4
-X-Merchant-ID: MERCHANT_001
 ```
 
 **Response (200 OK):**
 ```json
 {
-  "pan": "4111111111111111",
-  "lastFour": "1111",
-  "cardScheme": "VISA",
-  "tokenType": "ONE_TIME",
+  "pan": "5500005555555559",
+  "lastFour": "5559",
+  "cardScheme": "MC",
   "expiryMonth": 12,
   "expiryYear": 2027
 }
 ```
 
 **Error responses:**
-- `403` — `X-Merchant-ID` does not match the token's owner
-- `404` — Token not found or inactive
+- `404` — Token not found, inactive, or expired
 - `429` — Rate limit exceeded
 - `500` — Crypto failure or compromised key
+
+### Revoke a token
+
+```http
+DELETE /api/v1/tokens/3a4f9d2e-1b5c-4f8a-a3e7-c6d9f0b2a1e4
+```
+
+**Response:** `204 No Content`
+
+Permanently deactivates the token (card lost or stolen). The vault record is retained for audit purposes. Subsequent `GET` on the same token returns `404`.
 
 ### Health check
 
@@ -178,15 +348,20 @@ All configuration is in `src/main/resources/application.yml`. Sensitive values a
 | `DATASOURCE_URL` | PostgreSQL JDBC URL | Yes |
 | `DATASOURCE_USER` | DB username (use `tokenisation_app` in prod) | Yes |
 | `DATASOURCE_PASSWORD` | DB password | Yes |
-| `PAN_HASH_SECRET` | HMAC-SHA256 secret for PAN deduplication | Yes |
-| `TAMPER_DETECTION_SECRET` | HMAC-SHA256 secret for key_versions row integrity | Yes |
 | `KMS_PROVIDER` | `aws` or `local-dev` | Yes |
+| `KMS_LOCAL_DEV_KEK_HEX` | 32-byte hex KEK for local-dev mode | local-dev only |
 | `AWS_REGION` | AWS region (when `KMS_PROVIDER=aws`) | AWS only |
 | `AWS_KMS_KEY_ARN` | CMK ARN (when `KMS_PROVIDER=aws`) | AWS only |
+| `KMS_AWS_SEED_ON_STARTUP` | Set `true` to auto-seed KEK+HMAC rows on first boot | AWS only (dev) |
+| `KMS_AWS_ENDPOINT_OVERRIDE` | Override KMS endpoint (e.g. `http://localhost:4566` for LocalStack) | LocalStack only |
 
 ### Key application.yml settings
 
 ```yaml
+tokenisation:
+  allowed-card-schemes:        # allowlist for cardScheme field; extend to add VISA etc.
+    - MC
+
 rotation:
   batch:
     cron: "0 */15 * * * *"   # run rotation batches every 15 minutes
@@ -197,7 +372,6 @@ rotation:
 
 detokenisation:
   rate-limit:
-    per-merchant-per-minute: 1000
     per-service-per-minute: 10000
 ```
 
@@ -258,7 +432,7 @@ Results are written as JSON to `target/load-test-results/` after each test.
 |------------|----------|-------|-----------------|
 | `TokenisationLoadTest` | `POST /api/v1/tokens` only | 1K → 50K requests | 20 |
 | `DetokenisationLoadTest` | `GET /api/v1/tokens/{token}` only | 1K → 50K requests | 20 |
-| `MixedWorkloadLoadTest` | 40% tokenise + 35% detokenise + 20% recurring + 5% status | 1K → 50K requests | 20 |
+| `MixedWorkloadLoadTest` | 60% tokenise + 35% detokenise + 5% status | 1K → 50K requests | 20 |
 | `KeyRotationUnderLoadTest` | Full rotation while live traffic continues | 1K pre-seeded tokens | 20 |
 | `TamperedKeyUnderLoadTest` | DB-level key tamper during load | 500 pre-seeded tokens | 20 |
 
@@ -325,18 +499,18 @@ The `load-tests` Maven profile adds these JVM flags via the Surefire `argLine`:
 
 This gives the scheduler enough carrier threads to run all concurrently-pinned virtual threads. However, as with the Tomcat platform-thread issue, this is a mitigation. The primary fix is keeping concurrency ≤ 20.
 
-#### Pitfall: shared PAN for RECURRING tokenisation causes NonUniqueResultException
+#### Pitfall: shared PAN for tokenisation under concurrent load causes NonUniqueResultException
 
-`MixedWorkloadLoadTest` originally used a fixed PAN (`"4111111111111111"`) for all `TOKENISE_RECURRING` operations to exercise the deduplication path. Under concurrent load (15+ threads), this causes a race condition:
+`MixedWorkloadLoadTest` originally used a fixed PAN for all tokenisation requests to exercise the deduplication path. Under concurrent load (15+ threads), this causes a race condition:
 
-1. Multiple threads call `findActiveRecurringByPanHashAndMerchant` simultaneously.
+1. Multiple threads call `findActiveByPanHash` simultaneously.
 2. All find zero results (no token exists yet).
-3. All insert a new `RECURRING` token for the same PAN + merchant.
+3. All insert a new token for the same PAN.
 4. The next call to the same query finds N rows and throws `NonUniqueResultException` because Spring Data JPA's `Optional<T>` return type uses `getSingleResult()` internally.
 
-The symptom appears at 5K scale (1,000 RECURRING requests at 15 concurrency) but not at 1K scale (200 RECURRING requests at 10 concurrency) — higher concurrency means more simultaneous inserts.
+The symptom appears at 5K scale but not 1K scale — higher concurrency means more simultaneous inserts.
 
-**Fix applied:** All tokenisation requests (ONE_TIME and RECURRING) use `PanGenerator.generateVisa16()` to generate unique PANs. No two threads compete for the same PAN+merchant slot, so there is never more than one token per key. Dedup correctness under concurrent writes is covered by `DetokenisationIntegrationTest`, not by the load tests.
+**Fix applied:** All tokenisation requests use `PanGenerator.generateVisa16()` to generate unique PANs. No two threads compete for the same PAN slot. Dedup correctness under concurrent writes is covered by `TokenisationIntegrationTest`, not by the load tests.
 
 #### Pitfall: Testcontainers PostgreSQL has a low default connection limit
 
@@ -363,6 +537,139 @@ The `<` (strict less-than) between concurrency and pool size is intentional — 
 
 ---
 
+## Gatling Simulations
+
+Gatling simulations test the running application from the outside — they require `make start` first and connect to it over HTTP like a real client. Unlike the `make load-test` suite (which uses `@SpringBootTest` and Testcontainers), Gatling tests a real standalone instance against a real PostgreSQL container.
+
+### Prerequisites
+
+**Always recreate the Postgres container before Gatling testing.** The container needs specific tuning that only takes effect at container creation time.
+
+#### Why Postgres tuning matters
+
+On macOS, Docker Desktop virtualises disk I/O through a VM. PostgreSQL's default `synchronous_commit=on` makes every `COMMIT` wait for a `fsync()` call before returning. On macOS Docker Desktop this `fsync()` can take 50–100ms per write (vs < 1ms on Linux bare metal). Under 333 rps of tokenisation (each requiring 3–4 DB writes), this means:
+
+1. All HikariCP connections are blocked waiting for fsync
+2. HikariCP's keepalive test (`isValid()`) times out on all connections simultaneously
+3. HikariCP evicts the entire pool → `total=0, waiting=N`
+4. The app returns 500s for every request
+
+The fix is `synchronous_commit=off`: commits are acknowledged immediately; WAL is still written, just asynchronously. Data written within the last ~200ms could be lost on a crash — completely acceptable for load testing.
+
+The container also needs `fsync=off` to disable all OS-level fsync calls and `full_page_writes=off` to reduce WAL volume. All three together reduce write latency from ~100ms to < 1ms on macOS Docker Desktop.
+
+#### Setup steps
+
+```bash
+make stop-postgres      # removes the old container (no synchronous_commit=off)
+make start              # creates a new container with all Postgres tuning,
+                        # runs Flyway migrations, then starts the app
+                        # (pool=30, virtual threads=true are exported automatically)
+```
+
+Verify the tuning took effect:
+```bash
+docker exec card-tokenisation-db psql -U tokenisation_app -d tokenisation \
+  -c "SHOW synchronous_commit; SHOW max_connections;"
+```
+Expected output: `synchronous_commit = off`, `max_connections = 200`.
+
+Also check the app log for:
+```
+HikariPool-1 - configuration: maximumPoolSize=30
+```
+
+### Running simulations
+
+```bash
+# Default: MixedSimulation at 20k requests (70% tokenise / 30% detokenise)
+make gatling-test
+
+# Scale up — 100k requests over 120 seconds = 833 rps
+make gatling-test GATLING_SCALE=100k
+
+# Reduce RPS by spreading over a longer window (333 rps instead of 833)
+make gatling-test GATLING_SCALE=100k GATLING_DURATION=300
+
+# Run a specific simulation
+make gatling-test GATLING_SIM=TokenisationSimulation GATLING_SCALE=50k
+make gatling-test GATLING_SIM=DetokenisationSimulation GATLING_SCALE=50k
+make gatling-test GATLING_SIM=RotationSimulation GATLING_SCALE=20k
+```
+
+### How scale works
+
+`GATLING_SCALE` sets the total number of requests. `GATLING_DURATION` (default 120 s) is the sustained-load window. The simulation derives:
+
+```
+targetRps = GATLING_SCALE / GATLING_DURATION
+```
+
+Gatling injects `targetRps` new virtual users per second (open workload model — each user fires one request and exits). For `GATLING_SCALE=100k GATLING_DURATION=120`: 833 new users/sec × 120 s ≈ 100k total requests. A developer laptop may not sustain 833 rps without tuning; use `GATLING_DURATION=300` to drop to 333 rps.
+
+### Available simulations
+
+| Simulation | Default via `GATLING_SIM=` | What it measures |
+|------------|---------------------------|------------------|
+| `MixedSimulation` | *(default)* | 70% tokenise + 30% detokenise — production traffic pattern |
+| `TokenisationSimulation` | `TokenisationSimulation` | Pure write throughput — every request is a unique PAN |
+| `DetokenisationSimulation` | `DetokenisationSimulation` | Pure read throughput — seeds 10k tokens then reads them |
+| `RotationSimulation` | `RotationSimulation` | Mixed traffic while KEK rotation runs; **requires fresh app start** |
+
+#### MixedSimulation (recommended)
+
+Seeds 10k tokens in the setup phase, then fires tokenise (70%) and detokenise (30%) concurrently. Gatling's HTML report shows separate latency breakdowns for each operation.
+
+```bash
+make gatling-test                            # 20k requests, ~166 rps
+make gatling-test GATLING_SCALE=100k         # 100k requests, 833 rps
+make gatling-test GATLING_SCALE=100k GATLING_DURATION=300   # 333 rps
+```
+
+#### TokenisationSimulation
+
+Pure write load. Every request generates a fresh random Luhn-valid PAN so the deduplication path is never hit — this exercises the full encrypt-and-insert code path each time.
+
+```bash
+make gatling-test GATLING_SIM=TokenisationSimulation GATLING_SCALE=50k
+```
+
+#### DetokenisationSimulation
+
+Seeds 10k tokens in `before()`, then fires GET requests against them at random. At large scales each token is read multiple times, which exercises the read-heavy path (no writes). Use this to measure detokenise latency and throughput independently.
+
+```bash
+make gatling-test GATLING_SIM=DetokenisationSimulation GATLING_SCALE=50k
+```
+
+#### RotationSimulation
+
+Triggers a KEK rotation via `POST /api/v1/admin/keys/rotate`, then drives 70/30 mixed traffic while the rotation batch runs in the background. Validates that zero errors occur during rotation and that all pre-seeded tokens remain detokenisable throughout.
+
+> **Requires a fresh app start before each run.** The simulation resets `key_versions` in the database but cannot reset the application's in-memory key ring. If the app already completed a rotation the ring holds a different key than the DB expects, causing failures.
+
+```bash
+make start   # fresh start — ring must match DB key state
+make gatling-test GATLING_SIM=RotationSimulation GATLING_SCALE=20k
+```
+
+Admin credentials default to `admin / change_me`. Override if your instance uses different credentials:
+
+```bash
+make gatling-test GATLING_SIM=RotationSimulation \
+  -DadminUser=myuser -DadminPass=mypass
+```
+
+### Reading results
+
+Gatling writes an HTML report to `target/gatling/<simulation-name>-<timestamp>/index.html`. Open it in a browser for p50/p75/p95/p99 latency breakdown, throughput over time, and per-request error details.
+
+### Assertions
+
+All simulations assert p99 ≤ 2000ms and ≥ 99% success rate. `RotationSimulation` uses a wider p99 threshold of 5000ms to accommodate the rotation batch overhead. A failed assertion exits Maven with a non-zero status code.
+
+---
+
 ## Architecture
 
 For a detailed explanation of how the system works — including plain-language definitions of DEK, KEK, KMS, envelope encryption, and tamper detection — see [docs/design.md](docs/design.md).
@@ -371,20 +678,20 @@ For a detailed explanation of how the system works — including plain-language 
 
 ```
 REST API
-  TokenController          → POST /api/v1/tokens, GET /api/v1/tokens/{token}
+  TokenController          → POST /api/v1/tokens, GET /api/v1/tokens/{token}, DELETE /api/v1/tokens/{token}
   AdminKeyController       → POST /api/v1/admin/keys/rotate
   HealthController         → GET /api/v1/health
   MetricsController        → GET /api/v1/metrics
 
 Service Layer
   TokenisationService      → PAN validation, dedup, envelope encrypt, audit
-  DetokenisationService    → scope check, DEK unwrap, GCM decrypt, audit
+  DetokenisationService    → expiry check, DEK unwrap, GCM decrypt, audit
   KeyRotationService       → scheduled / emergency rotation initiation
 
 Crypto Layer
   AesGcmCipher             → AES-256-GCM encrypt / decrypt / wrap DEK
   PanHasher                → HMAC-SHA256 PAN fingerprint (dedup)
-  InMemoryKeyRing          → versioned in-memory KEK store
+  InMemoryKekKeyRing          → versioned in-memory KEK store
   TamperDetector           → HMAC-SHA256 row integrity check
 
 KMS Layer
@@ -435,7 +742,6 @@ The following items are implemented as stubs or deferred to Phase 2. **Do not de
 | Severity | Item | Location | Status |
 |----------|------|----------|--------|
 | CRITICAL | All API endpoints allow unauthenticated access | `SecurityConfig.java` | Phase 2 — JWT stub in place |
-| CRITICAL | Merchant ID accepted from request body (should come from JWT) | `TokenController.java` | Resolved when JWT is wired up |
 | CRITICAL | Admin key rotation endpoint has no authentication | `AdminKeyController.java` | Protect with mTLS or admin JWT role before deploy |
 | HIGH | Swagger UI accessible without auth | `application.yml` springdoc section | Disable in production profile |
 | HIGH | Rate limiting is single-node only (Caffeine in-memory) | `RateLimitInterceptor.java` | Redis-backed for multi-node |
@@ -450,7 +756,7 @@ The following items are implemented as stubs or deferred to Phase 2. **Do not de
 - HikariCP default removed; KEK has no hardcoded fallback in `application.yml`
 - Database role `tokenisation_app` has minimum-privilege grants; audit log is append-only at DB layer
 - No passwords committed to source control (`V6__setup_db_roles.sql` creates role without password)
-- Caffeine rate limiter bounded to 10,000 merchant entries; header length validated at ≤256 characters
+- Caffeine rate limiter with per-service cap; single-node in-memory (Redis-backed for multi-node)
 
 ### Documentation
 

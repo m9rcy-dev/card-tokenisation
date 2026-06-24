@@ -202,7 +202,7 @@ public class BulkTokenSeeder {
 
     private final JdbcTemplate jdbc;
     private final AesGcmCipher cipher;
-    private final InMemoryKeyRing keyRing;
+    private final InMemoryKekKeyRing keyRing;
     private final PanHasher panHasher;
 
     // Constructor injection

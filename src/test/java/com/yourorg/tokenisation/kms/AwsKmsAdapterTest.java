@@ -10,13 +10,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.kms.KmsClient;
-import software.amazon.awssdk.services.kms.model.DecryptRequest;
-import software.amazon.awssdk.services.kms.model.DecryptResponse;
-import software.amazon.awssdk.services.kms.model.DescribeKeyRequest;
-import software.amazon.awssdk.services.kms.model.DescribeKeyResponse;
-import software.amazon.awssdk.services.kms.model.EncryptRequest;
-import software.amazon.awssdk.services.kms.model.EncryptResponse;
-import software.amazon.awssdk.services.kms.model.KmsException;
+import software.amazon.awssdk.services.kms.model.*;
 import software.amazon.awssdk.services.kms.model.KeyMetadata;
 
 import java.time.Instant;

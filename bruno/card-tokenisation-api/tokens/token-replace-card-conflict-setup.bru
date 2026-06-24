@@ -1,0 +1,28 @@
+meta {
+  name: Setup - tokenise original PAN to enable conflict test
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tokens
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "pan": "5500005555555559",
+    "expiryMonth": 6,
+    "expiryYear": 2028,
+    "cardScheme": "MC"
+  }
+}
+
+assert {
+  res.status: eq 201
+}

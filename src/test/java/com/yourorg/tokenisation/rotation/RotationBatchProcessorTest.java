@@ -4,11 +4,10 @@ import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
-import com.yourorg.tokenisation.domain.TokenType;
 import com.yourorg.tokenisation.domain.TokenVault;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
@@ -30,9 +29,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for {@link RotationBatchProcessor}.
@@ -62,7 +59,7 @@ class RotationBatchProcessorTest {
     @Mock private TokenVaultRepository tokenVaultRepository;
     @Mock private KeyVersionRepository keyVersionRepository;
     @Mock private AesGcmCipher cipher;
-    @Mock private InMemoryKeyRing keyRing;
+    @Mock private InMemoryKekKeyRing keyRing;
     @Mock private AuditLogger auditLogger;
 
     private RotationBatchProcessor processor;
@@ -133,7 +130,7 @@ class RotationBatchProcessorTest {
         processor.processBatch(OLD_KEY_ID, NEW_KEY_ID, 10);
 
         ArgumentCaptor<AuditEventType> eventCaptor = ArgumentCaptor.forClass(AuditEventType.class);
-        verify(auditLogger).logSuccess(eventCaptor.capture(), any(), any(), any(), any(), any());
+        verify(auditLogger).logSuccess(eventCaptor.capture(), any(), any(), any(), any());
         assertThat(eventCaptor.getValue()).isEqualTo(AuditEventType.TOKEN_REENCRYPTED);
     }
 
@@ -195,7 +192,7 @@ class RotationBatchProcessorTest {
         processor.processBatch(OLD_KEY_ID, NEW_KEY_ID, 10);
 
         ArgumentCaptor<AuditEventType> eventCaptor = ArgumentCaptor.forClass(AuditEventType.class);
-        verify(auditLogger).logFailure(eventCaptor.capture(), any(), any(), any(), any(), any(), any());
+        verify(auditLogger).logFailure(eventCaptor.capture(), any(), any(), any(), any(), any());
         assertThat(eventCaptor.getValue()).isEqualTo(AuditEventType.RE_ENCRYPTION_FAILURE);
     }
 
@@ -233,7 +230,7 @@ class RotationBatchProcessorTest {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /**
-     * Stubs {@link InMemoryKeyRing#getByVersion} to return real {@link KeyMaterial} instances
+     * Stubs {@link InMemoryKekKeyRing#getByVersion} to return real {@link KeyMaterial} instances
      * for both the old and new key version IDs.
      *
      * <p>The KEK bytes are all-zero 32-byte arrays — the cipher itself is mocked so the
@@ -256,7 +253,6 @@ class RotationBatchProcessorTest {
                 .activatedAt(Instant.now().minusSeconds(3600))
                 .rotateBy(Instant.now().plusSeconds(86400))
                 .createdBy("test")
-                .checksum("checksum")
                 .build();
         try {
             Field idField = KeyVersion.class.getDeclaredField("id");
@@ -278,12 +274,10 @@ class RotationBatchProcessorTest {
                 .encryptedDek(new byte[60])
                 .keyVersion(kv)
                 .panHash("hash")
-                .tokenType(TokenType.ONE_TIME)
                 .lastFour("1111")
                 .cardScheme("VISA")
                 .expiryMonth((short) 12)
                 .expiryYear((short) 2027)
-                .merchantId("MERCHANT_001")
                 .createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .build();

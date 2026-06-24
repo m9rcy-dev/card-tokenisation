@@ -37,14 +37,15 @@ import java.util.regex.Pattern;
 public class PanMaskingTurboFilter extends TurboFilter {
 
     /**
-     * Pre-compiled regex matching any run of 12–19 consecutive decimal digits.
+     * Pre-compiled regex matching any run of 13–19 consecutive decimal digits.
      *
-     * <p>12–19 covers all major PAN formats:
+     * <p>13–19 covers all major PAN formats:
      * 13 (Visa legacy), 15 (Amex), 16 (Visa/MC/Discover), 19 (Maestro).
-     * The filter deliberately casts a wide net — false positives are acceptable
-     * (suppressed log events) but false negatives (PAN in logs) are not.
+     * 12-digit sequences are intentionally excluded: no card scheme uses 12 digits,
+     * but AWS account IDs are exactly 12 digits (e.g. 000000000000 in LocalStack ARNs)
+     * which would otherwise cause false positives in KMS exception messages.
      */
-    private static final Pattern PAN_PATTERN = Pattern.compile("\\d{12,19}");
+    private static final Pattern PAN_PATTERN = Pattern.compile("\\d{13,19}");
 
     /**
      * Examines the formatted log message and denies the event if it contains a PAN-like sequence.
@@ -81,8 +82,8 @@ public class PanMaskingTurboFilter extends TurboFilter {
 
         if (throwable != null && containsPanInThrowable(throwable)) {
             System.err.printf("[PAN-MASK] Suppressed log event from [%s] at level [%s] — " +
-                    "exception message contained a PAN-like digit sequence%n",
-                    logger.getName(), level);
+                    "exception message contained a PAN-like digit sequence (root type: %s)%n",
+                    logger.getName(), level, rootCause(throwable).getClass().getName());
             return FilterReply.DENY;
         }
 
@@ -115,6 +116,12 @@ public class PanMaskingTurboFilter extends TurboFilter {
      * @param throwable the exception to inspect
      * @return {@code true} if any exception message in the chain matches the PAN pattern
      */
+    private Throwable rootCause(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null) current = current.getCause();
+        return current;
+    }
+
     private boolean containsPanInThrowable(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {

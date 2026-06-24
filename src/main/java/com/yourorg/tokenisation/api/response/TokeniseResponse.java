@@ -1,6 +1,5 @@
 package com.yourorg.tokenisation.api.response;
 
-import com.yourorg.tokenisation.domain.TokenType;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -10,7 +9,7 @@ import java.time.Instant;
  * Response body for {@code POST /api/v1/tokens}.
  *
  * <p>Returned with HTTP 201 on successful tokenisation and HTTP 200 when
- * a de-dup match is found for a {@code RECURRING} token.
+ * a de-dup match is found for an existing token.
  *
  * <p>The response contains no PAN digits — only the last four digits
  * ({@code lastFour}) are included as a cardholder display hint.
@@ -29,13 +28,6 @@ public class TokeniseResponse {
     private final String token;
 
     /**
-     * The token lifecycle type ({@code RECURRING} or {@code ONE_TIME}).
-     *
-     * @see TokenType
-     */
-    private final TokenType tokenType;
-
-    /**
      * The last four digits of the original PAN.
      *
      * <p>Included as a display hint only (e.g. "ending in 1111").
@@ -44,7 +36,7 @@ public class TokeniseResponse {
     private final String lastFour;
 
     /**
-     * The card network scheme associated with the token (e.g. {@code VISA}).
+     * The card network scheme associated with the token (e.g. {@code MC}).
      */
     private final String cardScheme;
 

@@ -2,8 +2,6 @@ package com.yourorg.tokenisation.crypto;
 
 import com.yourorg.tokenisation.AbstractIntegrationTest;
 import com.yourorg.tokenisation.domain.KeyStatus;
-
-import static com.yourorg.tokenisation.AbstractIntegrationTest.SEED_KEY_VERSION_ID;
 import com.yourorg.tokenisation.kms.KmsProvider;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -11,13 +9,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
-
-import org.springframework.dao.InvalidDataAccessApiUsageException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -28,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>{@link KeyRingInitialiser} is mocked out of the Spring context (via {@link MockBean})
  * to prevent it from auto-running during context startup. Each test seeds the
  * {@code key_versions} table, then constructs and invokes the real initialiser manually.
- * The Spring-managed {@link InMemoryKeyRing} bean is used as the assertion target
+ * The Spring-managed {@link InMemoryKekKeyRing} bean is used as the assertion target
  * so that we verify the same ring that production code would use.
  *
  * <p>Uses a real PostgreSQL container via {@link AbstractIntegrationTest}.
@@ -51,7 +48,10 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     private KeyVersionRepository keyVersionRepository;
 
     @Autowired
-    private InMemoryKeyRing keyRing;
+    private InMemoryKekKeyRing keyRing;
+
+    @Autowired
+    private InMemoryHmacKeyRing hmacKeyRing;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -72,23 +72,23 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
         jdbcTemplate.execute("DELETE FROM key_versions");
         jdbcTemplate.update("""
                 INSERT INTO key_versions (id, kms_key_id, kms_provider, key_alias, encrypted_kek_blob,
-                    status, activated_at, rotate_by, created_by, checksum)
-                VALUES (?::uuid, ?, ?, ?, ?, ?, now(), ?, ?, ?)
+                    key_type, status, activated_at, rotate_by, created_by)
+                VALUES (?::uuid, ?, ?, ?, ?, ?, ?, now(), ?, ?)
                 """,
                 SEED_KEY_VERSION_ID,
                 "local-dev-key",
                 "LOCAL_DEV",
                 "integration-test-seed-key",
                 "ignored",
+                "KEK",
                 "ACTIVE",
                 Timestamp.from(Instant.now().plusSeconds(365L * 24 * 60 * 60)),
-                "test-seeder",
-                "seed-checksum"
+                "test-seeder"
         );
     }
 
     @Test
-    void run_activeKeyVersionInDatabase_isLoadedAndPromotedAsActive() throws Exception {
+    void run_activeKeyVersionInDatabase_isLoadedAndPromotedAsActive() {
         String activeVersionId = insertKeyVersion(KeyStatus.ACTIVE, "active-key");
         KeyRingInitialiser initialiserUnderTest = buildInitialiser();
 
@@ -102,7 +102,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void run_rotatingKeyVersionInDatabase_isLoadedButActiveVersionPromoted() throws Exception {
+    void run_rotatingKeyVersionInDatabase_isLoadedButActiveVersionPromoted() {
         String activeVersionId = insertKeyVersion(KeyStatus.ACTIVE, "active-key");
         String rotatingVersionId = insertKeyVersion(KeyStatus.ROTATING, "rotating-key");
         KeyRingInitialiser initialiserUnderTest = buildInitialiser();
@@ -117,7 +117,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void run_retiredKeyVersionInDatabase_isNotLoadedIntoKeyRing() throws Exception {
+    void run_retiredKeyVersionInDatabase_isNotLoadedIntoKeyRing() {
         insertKeyVersion(KeyStatus.ACTIVE, "active-key");
         String retiredVersionId = insertKeyVersion(KeyStatus.RETIRED, "retired-key");
         KeyRingInitialiser initialiserUnderTest = buildInitialiser();
@@ -129,7 +129,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void run_kekBytesLoadedFromLocalDevAdapter_are32Bytes() throws Exception {
+    void run_kekBytesLoadedFromLocalDevAdapter_are32Bytes() {
         String activeVersionId = insertKeyVersion(KeyStatus.ACTIVE, "kek-size-test");
         KeyRingInitialiser initialiserUnderTest = buildInitialiser();
 
@@ -150,7 +150,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
         // We verify the translated exception type and the preserved root message.
         assertThatThrownBy(() -> initialiserUnderTest.run(null))
                 .isInstanceOf(InvalidDataAccessApiUsageException.class)
-                .hasMessageContaining("ACTIVE key version");
+                .hasMessageContaining("ACTIVE KEK version");
     }
 
     /**
@@ -162,7 +162,7 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
      * @return a configured but not yet executed initialiser
      */
     private KeyRingInitialiser buildInitialiser() {
-        return new KeyRingInitialiser(kmsProvider, keyVersionRepository, keyRing);
+        return new KeyRingInitialiser(kmsProvider, keyVersionRepository, keyRing, hmacKeyRing);
     }
 
     /**
@@ -181,18 +181,18 @@ class KeyRingInitialiserIntegrationTest extends AbstractIntegrationTest {
         Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 60 * 60));
         jdbcTemplate.update("""
                 INSERT INTO key_versions (id, kms_key_id, kms_provider, key_alias, encrypted_kek_blob,
-                    status, activated_at, rotate_by, created_by, checksum)
-                VALUES (?::uuid, ?, ?, ?, ?, ?, now(), ?, ?, ?)
+                    key_type, status, activated_at, rotate_by, created_by)
+                VALUES (?::uuid, ?, ?, ?, ?, ?, ?, now(), ?, ?)
                 """,
                 versionId,
                 "local-dev-key",
                 "LOCAL_DEV",
                 keyAlias,
                 "ignored",
+                "KEK",
                 status.name(),
                 rotateBy,
-                "integration-test",
-                "placeholder-checksum"
+                "integration-test"
         );
         return versionId;
     }

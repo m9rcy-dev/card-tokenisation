@@ -1,7 +1,7 @@
 meta {
   name: Detokenise - 404 token not found
   type: http
-  seq: 11
+  seq: 9
 }
 
 get {
@@ -10,9 +10,6 @@ get {
   auth: none
 }
 
-headers {
-  X-Merchant-ID: {{merchantId}}
-}
 
 assert {
   res.status: eq 404

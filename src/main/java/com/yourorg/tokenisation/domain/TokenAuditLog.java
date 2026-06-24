@@ -1,11 +1,6 @@
 package com.yourorg.tokenisation.domain;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -76,13 +71,6 @@ public class TokenAuditLog {
     private String actorIp;
 
     /**
-     * The merchant whose token was operated on.
-     * {@code null} for key-level events with no merchant scope.
-     */
-    @Column(name = "merchant_id", updatable = false)
-    private String merchantId;
-
-    /**
      * Whether the operation succeeded or failed.
      * One of {@code SUCCESS} or {@code FAILURE}.
      */
@@ -118,7 +106,6 @@ public class TokenAuditLog {
      * @param keyVersionId  the affected key version; may be {@code null}
      * @param actorId       identity of the caller; may be {@code null} if unauthenticated
      * @param actorIp       IP address of the caller; may be {@code null}
-     * @param merchantId    the merchant scope; may be {@code null}
      * @param outcome       {@code SUCCESS} or {@code FAILURE}
      * @param failureReason description of failure; must not contain PAN; may be {@code null}
      * @param metadata      optional structured extras; may be {@code null}
@@ -131,7 +118,6 @@ public class TokenAuditLog {
             UUID keyVersionId,
             String actorId,
             String actorIp,
-            String merchantId,
             String outcome,
             String failureReason,
             Map<String, Object> metadata,
@@ -141,7 +127,6 @@ public class TokenAuditLog {
         this.keyVersionId = keyVersionId;
         this.actorId = actorId;
         this.actorIp = actorIp;
-        this.merchantId = merchantId;
         this.outcome = outcome;
         this.failureReason = failureReason;
         this.metadata = metadata;

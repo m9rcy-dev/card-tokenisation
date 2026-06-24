@@ -1,19 +1,17 @@
 package com.yourorg.tokenisation.service;
 
+import com.yourorg.tokenisation.api.request.CardReplacementRequest;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
-import com.yourorg.tokenisation.crypto.AesGcmCipher;
-import com.yourorg.tokenisation.crypto.EncryptResult;
-import com.yourorg.tokenisation.crypto.InMemoryKeyRing;
-import com.yourorg.tokenisation.crypto.KeyMaterial;
-import com.yourorg.tokenisation.crypto.PanHasher;
+import com.yourorg.tokenisation.crypto.*;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
-import com.yourorg.tokenisation.domain.TokenType;
 import com.yourorg.tokenisation.domain.TokenVault;
+import com.yourorg.tokenisation.exception.CardAlreadyTokenisedException;
 import com.yourorg.tokenisation.exception.PanValidationException;
+import com.yourorg.tokenisation.exception.TokenNotFoundException;
 import com.yourorg.tokenisation.exception.TokenisationException;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
@@ -32,23 +30,19 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for {@link TokenisationService}.
  *
- * <p>All collaborators are mocked. Tests cover the documented
- * {@code tokenise} method behaviours:
+ * <p>All collaborators are mocked. Tests cover:
  * <ul>
- *   <li>Happy path — new ONE_TIME and RECURRING token creation
- *   <li>De-dup — existing RECURRING token is returned without new vault record
+ *   <li>Happy path — new token creation and de-dup return
+ *   <li>De-dup — existing token for same PAN is returned without new vault record
  *   <li>PAN validation — null, blank, non-numeric, Luhn-invalid
- *   <li>Key ring empty — {@link IllegalStateException} from {@link InMemoryKeyRing#getActive()}
+ *   <li>Key ring empty — {@link IllegalStateException} from {@link InMemoryKekKeyRing#getActive()}
+ *   <li>Token revocation — deactivation and audit
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -56,12 +50,14 @@ class TokenisationServiceTest {
 
     private static final String VALID_PAN = "4111111111111111";
     private static final String VALID_PAN_HASH = "test-pan-hash-value";
-    private static final String MERCHANT_ID = "MERCHANT_001";
+    private static final String HMAC_VERSION_ID = "cccccccc-0000-0000-0000-000000000001";
+    private static final HashResult VALID_HASH_RESULT = new HashResult(VALID_PAN_HASH, HMAC_VERSION_ID);
     private static final long TOKEN_TTL_DAYS = 1825L;
 
     @Mock private AesGcmCipher cipher;
     @Mock private PanHasher panHasher;
-    @Mock private InMemoryKeyRing keyRing;
+    @Mock private InMemoryKekKeyRing keyRing;
+    @Mock private InMemoryHmacKeyRing hmacKeyRing;
     @Mock private TokenVaultRepository tokenVaultRepository;
     @Mock private KeyVersionRepository keyVersionRepository;
     @Mock private AuditLogger auditLogger;
@@ -70,88 +66,62 @@ class TokenisationServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new TokenisationService(cipher, panHasher, keyRing,
+        service = new TokenisationService(cipher, panHasher, keyRing, hmacKeyRing,
                 tokenVaultRepository, keyVersionRepository, auditLogger, TOKEN_TTL_DAYS);
     }
 
-    // ── Happy path — ONE_TIME ─────────────────────────────────────────────────
+    // ── Happy path — new token ───────────────────────────────────────────────
 
     @Test
-    void tokenise_oneTimePan_persistsNewVaultRecordAndReturnsToken() {
-        TokeniseRequest request = buildRequest(VALID_PAN, TokenType.ONE_TIME);
+    void tokenise_newPan_persistsNewVaultRecordAndReturnsToken() {
+        TokeniseRequest request = buildRequest(VALID_PAN);
         KeyMaterial activeKey = buildKeyMaterial();
         KeyVersion activeVersion = buildKeyVersion();
         EncryptResult encryptResult = buildEncryptResult();
 
-        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_PAN_HASH);
+        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
         when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
         TokeniseResponse response = service.tokenise(request);
 
         assertThat(response.getToken()).isNotBlank();
-        assertThat(response.getTokenType()).isEqualTo(TokenType.ONE_TIME);
         assertThat(response.getLastFour()).isEqualTo("1111");
-        assertThat(response.getCardScheme()).isEqualTo("VISA");
+        assertThat(response.getCardScheme()).isEqualTo("MC");
         verify(tokenVaultRepository).save(any(TokenVault.class));
-        verify(auditLogger).logSuccess(eq(AuditEventType.TOKENISE), any(), eq(MERCHANT_ID), any(), any(), any());
+        verify(auditLogger).logSuccess(eq(AuditEventType.TOKENISE), any(), any(), any(), any());
     }
 
-    // ── Happy path — RECURRING (new token) ──────────────────────────────────
+    // ── De-dup — same PAN returns existing token ─────────────────────────────
 
     @Test
-    void tokenise_recurringPanWithNoExistingToken_persistsNewVaultRecord() {
-        TokeniseRequest request = buildRequest(VALID_PAN, TokenType.RECURRING);
-        KeyMaterial activeKey = buildKeyMaterial();
-        KeyVersion activeVersion = buildKeyVersion();
-        EncryptResult encryptResult = buildEncryptResult();
+    void tokenise_samePanCalledTwice_returnsSameTokenWithoutNewVaultRecord() {
+        TokeniseRequest request = buildRequest(VALID_PAN);
+        TokenVault existingVault = buildExistingVault();
 
-        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_PAN_HASH);
-        when(tokenVaultRepository.findActiveRecurringByPanHashAndMerchant(VALID_PAN_HASH, MERCHANT_ID))
-                .thenReturn(Optional.empty());
-        when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
-        when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
-        when(tokenVaultRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
-
-        TokeniseResponse response = service.tokenise(request);
-
-        assertThat(response.getTokenType()).isEqualTo(TokenType.RECURRING);
-        verify(tokenVaultRepository).save(any(TokenVault.class));
-    }
-
-    // ── De-dup — RECURRING ────────────────────────────────────────────────────
-
-    @Test
-    void tokenise_recurringPanWithExistingToken_returnsSameTokenWithoutNewVaultRecord() {
-        TokeniseRequest request = buildRequest(VALID_PAN, TokenType.RECURRING);
-        TokenVault existingVault = buildExistingVault(TokenType.RECURRING);
-
-        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_PAN_HASH);
-        when(tokenVaultRepository.findActiveRecurringByPanHashAndMerchant(VALID_PAN_HASH, MERCHANT_ID))
+        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH))
                 .thenReturn(Optional.of(existingVault));
 
         TokeniseResponse response = service.tokenise(request);
 
         assertThat(response.getToken()).isEqualTo(existingVault.getToken());
-        assertThat(response.getTokenType()).isEqualTo(TokenType.RECURRING);
-        // No new vault record must be written for de-dup
         verify(tokenVaultRepository, never()).save(any());
-        // No new encryption must happen
         verify(cipher, never()).encrypt(any(), any());
-        verify(auditLogger).logSuccess(eq(AuditEventType.TOKENISE), eq(existingVault.getTokenId()),
-                eq(MERCHANT_ID), any(), any(), any());
+        verify(auditLogger).logSuccess(eq(AuditEventType.TOKENISE),
+                eq(existingVault.getTokenId()), any(), any(), any());
     }
 
     @Test
-    void tokenise_recurringPanCalledTwice_returnsSameTokenOnSecondCall() {
-        TokeniseRequest request = buildRequest(VALID_PAN, TokenType.RECURRING);
-        TokenVault existingVault = buildExistingVault(TokenType.RECURRING);
+    void tokenise_samePanCalledTwice_returnsSameToken() {
+        TokeniseRequest request = buildRequest(VALID_PAN);
+        TokenVault existingVault = buildExistingVault();
 
-        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_PAN_HASH);
-        when(tokenVaultRepository.findActiveRecurringByPanHashAndMerchant(VALID_PAN_HASH, MERCHANT_ID))
+        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH))
                 .thenReturn(Optional.of(existingVault));
 
         TokeniseResponse first = service.tokenise(request);
@@ -160,31 +130,60 @@ class TokenisationServiceTest {
         assertThat(first.getToken()).isEqualTo(second.getToken());
     }
 
+    // ── HMAC rotation — dual-lookup dedup ────────────────────────────────────
+
     @Test
-    void tokenise_oneTimePanCalledTwice_returnsDifferentTokens() {
-        TokeniseRequest request = buildRequest(VALID_PAN, TokenType.ONE_TIME);
+    void tokenise_duringHmacRotation_fallsBackToOldHashForDedup() {
+        String oldHmacVersionId = "aaaaaaaa-0000-0000-0000-000000000099";
+        String oldHash = "old-pan-hash-value";
+        TokenVault existingVault = buildExistingVault();
+
+        // New hash misses; old rotating version ID is present in the ring
+        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
+        when(hmacKeyRing.findRotatingVersionId()).thenReturn(Optional.of(oldHmacVersionId));
+        when(panHasher.hashWithVersion(VALID_PAN, oldHmacVersionId)).thenReturn(oldHash);
+        when(tokenVaultRepository.findActiveByPanHash(oldHash)).thenReturn(Optional.of(existingVault));
+
+        TokeniseResponse response = service.tokenise(buildRequest(VALID_PAN));
+
+        assertThat(response.getToken()).isEqualTo(existingVault.getToken());
+        verify(tokenVaultRepository, never()).save(any());
+        verify(cipher, never()).encrypt(any(), any());
+        verify(auditLogger).logSuccess(eq(AuditEventType.TOKENISE),
+                eq(existingVault.getTokenId()), any(), any(), any());
+    }
+
+    @Test
+    void tokenise_duringHmacRotation_oldHashAlsoMisses_createsNewToken() {
+        String oldHmacVersionId = "aaaaaaaa-0000-0000-0000-000000000099";
+        String oldHash = "old-pan-hash-value";
         KeyMaterial activeKey = buildKeyMaterial();
         KeyVersion activeVersion = buildKeyVersion();
         EncryptResult encryptResult = buildEncryptResult();
 
-        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_PAN_HASH);
+        // Both new hash and old hash miss → genuinely new PAN
+        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
+        when(hmacKeyRing.findRotatingVersionId()).thenReturn(Optional.of(oldHmacVersionId));
+        when(panHasher.hashWithVersion(VALID_PAN, oldHmacVersionId)).thenReturn(oldHash);
+        when(tokenVaultRepository.findActiveByPanHash(oldHash)).thenReturn(Optional.empty());
         when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
-        when(tokenVaultRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        TokeniseResponse first = service.tokenise(request);
-        TokeniseResponse second = service.tokenise(request);
+        TokeniseResponse response = service.tokenise(buildRequest(VALID_PAN));
 
-        // ONE_TIME tokens always produce a new UUID — they must differ
-        assertThat(first.getToken()).isNotEqualTo(second.getToken());
+        assertThat(response.getToken()).isNotBlank();
+        verify(tokenVaultRepository).save(any(TokenVault.class));
     }
 
     // ── PAN validation — null ────────────────────────────────────────────────
 
     @Test
     void tokenise_nullPan_throwsPanValidationException() {
-        TokeniseRequest request = buildRequest(null, TokenType.ONE_TIME);
+        TokeniseRequest request = buildRequest(null);
 
         assertThatThrownBy(() -> service.tokenise(request))
                 .isInstanceOf(PanValidationException.class)
@@ -192,12 +191,12 @@ class TokenisationServiceTest {
 
         verify(tokenVaultRepository, never()).save(any());
         verify(auditLogger).logFailure(eq(AuditEventType.TOKENISE_FAILURE),
-                any(), eq(MERCHANT_ID), any(), any(), anyString(), any());
+                any(), any(), any(), anyString(), any());
     }
 
     @Test
     void tokenise_blankPan_throwsPanValidationException() {
-        TokeniseRequest request = buildRequest("   ", TokenType.ONE_TIME);
+        TokeniseRequest request = buildRequest("   ");
 
         assertThatThrownBy(() -> service.tokenise(request))
                 .isInstanceOf(PanValidationException.class)
@@ -211,9 +210,8 @@ class TokenisationServiceTest {
     @ParameterizedTest
     @ValueSource(strings = {"411111111111", "1234", "abcdefghijklmnop", "4111-1111-1111-1111"})
     void tokenise_invalidPanFormat_throwsPanValidationException(String invalidPan) {
-        TokeniseRequest request = buildRequest(invalidPan, TokenType.ONE_TIME);
+        TokeniseRequest request = buildRequest(invalidPan);
 
-        // PanHasher must not be called before validation
         assertThatThrownBy(() -> service.tokenise(request))
                 .isInstanceOf(PanValidationException.class);
 
@@ -225,8 +223,7 @@ class TokenisationServiceTest {
 
     @Test
     void tokenise_luhnInvalidPan_throwsPanValidationException() {
-        // 4111111111111112 fails Luhn (last digit changed from 1 to 2)
-        TokeniseRequest request = buildRequest("4111111111111112", TokenType.ONE_TIME);
+        TokeniseRequest request = buildRequest("4111111111111112");
 
         assertThatThrownBy(() -> service.tokenise(request))
                 .isInstanceOf(PanValidationException.class)
@@ -239,9 +236,10 @@ class TokenisationServiceTest {
 
     @Test
     void tokenise_keyRingHasNoActiveKey_throwsTokenisationException() {
-        TokeniseRequest request = buildRequest(VALID_PAN, TokenType.ONE_TIME);
+        TokeniseRequest request = buildRequest(VALID_PAN);
 
-        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_PAN_HASH);
+        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
         when(keyRing.getActive()).thenThrow(new IllegalStateException("No active key version has been promoted in the key ring"));
 
         assertThatThrownBy(() -> service.tokenise(request))
@@ -249,20 +247,21 @@ class TokenisationServiceTest {
 
         verify(tokenVaultRepository, never()).save(any());
         verify(auditLogger).logFailure(eq(AuditEventType.TOKENISE_FAILURE),
-                any(), eq(MERCHANT_ID), any(), any(), anyString(), any());
+                any(), any(), any(), anyString(), any());
     }
 
     // ── Audit log on failure ──────────────────────────────────────────────────
 
     @Test
     void tokenise_encryptionFails_writesFailureAuditBeforeRethrowing() {
-        TokeniseRequest request = buildRequest(VALID_PAN, TokenType.ONE_TIME);
+        TokeniseRequest request = buildRequest(VALID_PAN);
         KeyMaterial activeKey = buildKeyMaterial();
         KeyVersion activeVersion = buildKeyVersion();
 
-        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_PAN_HASH);
+        when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
         when(keyRing.getActive()).thenReturn(activeKey);
-        when(keyVersionRepository.findActiveOrThrow()).thenReturn(activeVersion);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenThrow(
                 new com.yourorg.tokenisation.crypto.EncryptionException("AES-GCM encryption failed"));
 
@@ -271,7 +270,7 @@ class TokenisationServiceTest {
 
         ArgumentCaptor<String> failureReasonCaptor = ArgumentCaptor.forClass(String.class);
         verify(auditLogger).logFailure(eq(AuditEventType.TOKENISE_FAILURE), any(),
-                eq(MERCHANT_ID), any(), any(), failureReasonCaptor.capture(), any());
+                any(), any(), failureReasonCaptor.capture(), any());
         assertThat(failureReasonCaptor.getValue()).doesNotContain(VALID_PAN);
     }
 
@@ -283,14 +282,189 @@ class TokenisationServiceTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    // ── Token revocation ─────────────────────────────────────────────────────
+
+    @Test
+    void revokeToken_activeToken_deactivatesAndWritesAudit() {
+        TokenVault vault = buildExistingVault();
+        when(tokenVaultRepository.findActiveByToken(vault.getToken())).thenReturn(Optional.of(vault));
+        when(tokenVaultRepository.save(any())).thenReturn(vault);
+
+        service.revokeToken(vault.getToken());
+
+        assertThat(vault.isActive()).isFalse();
+        verify(tokenVaultRepository).save(vault);
+        verify(auditLogger).logSuccess(eq(AuditEventType.TOKEN_REVOKED),
+                eq(vault.getTokenId()), any(), any(), any());
+    }
+
+    @Test
+    void revokeToken_unknownToken_throwsTokenNotFoundException() {
+        String unknownToken = "unknown-token";
+        when(tokenVaultRepository.findActiveByToken(unknownToken)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.revokeToken(unknownToken))
+                .isInstanceOf(TokenNotFoundException.class);
+
+        verify(tokenVaultRepository, never()).save(any());
+    }
+
+    @Test
+    void revokeToken_nullToken_throwsNullPointerException() {
+        assertThatThrownBy(() -> service.revokeToken(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    // ── Card replacement ──────────────────────────────────────────────────────
+
+    private static final String NEW_PAN        = "5105105105105100";
+    private static final String NEW_PAN_HASH   = "new-pan-hash";
+    private static final HashResult NEW_HASH_RESULT = new HashResult(NEW_PAN_HASH, HMAC_VERSION_ID);
+
+    @Test
+    void replaceCard_validNewPan_updatesVaultAndAuditsCardReplaced() {
+        TokenVault vault = buildExistingVault();
+        KeyMaterial activeKey = buildKeyMaterial();
+        KeyVersion activeVersion = buildKeyVersion();
+        EncryptResult encryptResult = buildEncryptResult();
+
+        when(tokenVaultRepository.findActiveByToken(vault.getToken())).thenReturn(Optional.of(vault));
+        when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.empty());
+        when(keyRing.getActive()).thenReturn(activeKey);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
+        when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
+        when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.replaceCard(vault.getToken(), buildReplacementRequest(NEW_PAN));
+
+        verify(cipher).encrypt(any(), any());
+        verify(tokenVaultRepository).save(vault);
+        verify(auditLogger).logSuccess(eq(AuditEventType.CARD_REPLACED),
+                eq(vault.getTokenId()), any(), any(), any());
+    }
+
+    @Test
+    void replaceCard_validNewPan_returnsResponseWithNewLastFour() {
+        TokenVault vault = buildExistingVault();
+        KeyMaterial activeKey = buildKeyMaterial();
+        KeyVersion activeVersion = buildKeyVersion();
+        EncryptResult encryptResult = buildEncryptResult();
+
+        when(tokenVaultRepository.findActiveByToken(vault.getToken())).thenReturn(Optional.of(vault));
+        when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.empty());
+        when(keyRing.getActive()).thenReturn(activeKey);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
+        when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
+        when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        var response = service.replaceCard(vault.getToken(), buildReplacementRequest(NEW_PAN));
+
+        assertThat(response.getLastFour()).isEqualTo("5100");
+    }
+
+    @Test
+    void replaceCard_samePanIdentityCase_succeedsWithoutConflict() {
+        TokenVault vault = buildExistingVault();
+        KeyMaterial activeKey = buildKeyMaterial();
+        KeyVersion activeVersion = buildKeyVersion();
+        EncryptResult encryptResult = buildEncryptResult();
+
+        when(tokenVaultRepository.findActiveByToken(vault.getToken())).thenReturn(Optional.of(vault));
+        when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
+        // findActiveByPanHash returns THE SAME vault — identity case, no conflict
+        when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.of(vault));
+        when(keyRing.getActive()).thenReturn(activeKey);
+        when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
+        when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
+        when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        // Should not throw
+        service.replaceCard(vault.getToken(), buildReplacementRequest(NEW_PAN));
+
+        verify(tokenVaultRepository).save(vault);
+    }
+
+    @Test
+    void replaceCard_unknownToken_throwsTokenNotFoundException() {
+        when(tokenVaultRepository.findActiveByToken("unknown")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.replaceCard("unknown", buildReplacementRequest(NEW_PAN)))
+                .isInstanceOf(TokenNotFoundException.class);
+
+        verify(tokenVaultRepository, never()).save(any());
+    }
+
+    @Test
+    void replaceCard_newPanAlreadyHasDifferentToken_throwsCardAlreadyTokenisedException() {
+        TokenVault existingVault = buildExistingVault();
+        TokenVault differentVault = buildExistingVault(); // different tokenId
+
+        when(tokenVaultRepository.findActiveByToken(existingVault.getToken()))
+                .thenReturn(Optional.of(existingVault));
+        when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH))
+                .thenReturn(Optional.of(differentVault));
+
+        assertThatThrownBy(() -> service.replaceCard(existingVault.getToken(), buildReplacementRequest(NEW_PAN)))
+                .isInstanceOf(CardAlreadyTokenisedException.class);
+
+        verify(tokenVaultRepository, never()).save(any());
+        verify(cipher, never()).encrypt(any(), any());
+    }
+
+    @Test
+    void replaceCard_luhnInvalidNewPan_throwsPanValidationException() {
+        // PAN validation runs before the repository lookup — no stubbing needed
+        assertThatThrownBy(() -> service.replaceCard("any-token", buildReplacementRequest("4111111111111112")))
+                .isInstanceOf(PanValidationException.class)
+                .hasMessageContaining("Luhn");
+
+        verify(tokenVaultRepository, never()).save(any());
+    }
+
+    @Test
+    void replaceCard_nullPan_throwsPanValidationException() {
+        // PAN validation runs before the repository lookup — no stubbing needed
+        assertThatThrownBy(() -> service.replaceCard("any-token", buildReplacementRequest(null)))
+                .isInstanceOf(PanValidationException.class);
+    }
+
+    @Test
+    void replaceCard_keyRingEmpty_throwsTokenisationException() {
+        TokenVault vault = buildExistingVault();
+
+        when(tokenVaultRepository.findActiveByToken(vault.getToken())).thenReturn(Optional.of(vault));
+        when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
+        when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.empty());
+        when(keyRing.getActive()).thenThrow(new IllegalStateException("No active key"));
+
+        assertThatThrownBy(() -> service.replaceCard(vault.getToken(), buildReplacementRequest(NEW_PAN)))
+                .isInstanceOf(TokenisationException.class);
+    }
+
+    @Test
+    void replaceCard_nullToken_throwsNullPointerException() {
+        assertThatThrownBy(() -> service.replaceCard(null, buildReplacementRequest(NEW_PAN)))
+                .isInstanceOf(NullPointerException.class);
+    }
+
     // ── Test helpers ──────────────────────────────────────────────────────────
 
-    private TokeniseRequest buildRequest(String pan, TokenType tokenType) {
+    private CardReplacementRequest buildReplacementRequest(String pan) {
+        CardReplacementRequest request = new CardReplacementRequest();
+        request.setPan(pan);
+        request.setCardScheme("MC");
+        request.setExpiryMonth(6);
+        request.setExpiryYear(2029);
+        return request;
+    }
+
+    private TokeniseRequest buildRequest(String pan) {
         TokeniseRequest request = new TokeniseRequest();
         request.setPan(pan);
-        request.setTokenType(tokenType);
-        request.setMerchantId(MERCHANT_ID);
-        request.setCardScheme("VISA");
+        request.setCardScheme("MC");
         request.setExpiryMonth(12);
         request.setExpiryYear(2027);
         return request;
@@ -311,7 +485,6 @@ class TokenisationServiceTest {
                 .activatedAt(Instant.now())
                 .rotateBy(Instant.now().plusSeconds(365L * 24 * 60 * 60))
                 .createdBy("test")
-                .checksum("test-checksum")
                 .build();
     }
 
@@ -323,7 +496,7 @@ class TokenisationServiceTest {
         return new EncryptResult(ciphertext, iv, authTag, encryptedDek);
     }
 
-    private TokenVault buildExistingVault(TokenType tokenType) {
+    private TokenVault buildExistingVault() {
         return TokenVault.builder()
                 .token(UUID.randomUUID().toString())
                 .encryptedPan(new byte[16])
@@ -332,12 +505,10 @@ class TokenisationServiceTest {
                 .encryptedDek(new byte[60])
                 .keyVersion(buildKeyVersion())
                 .panHash(VALID_PAN_HASH)
-                .tokenType(tokenType)
                 .lastFour("1111")
-                .cardScheme("VISA")
+                .cardScheme("MC")
                 .expiryMonth((short) 12)
                 .expiryYear((short) 2027)
-                .merchantId(MERCHANT_ID)
                 .createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(TOKEN_TTL_DAYS * 86400))
                 .build();

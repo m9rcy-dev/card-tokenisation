@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: card-tokenisation
+    # host.docker.internal resolves to the macOS host from inside a Docker container.
+    # The Spring Boot app must be running on port 8080 (make start).
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+    metrics_path: /actuator/prometheus
