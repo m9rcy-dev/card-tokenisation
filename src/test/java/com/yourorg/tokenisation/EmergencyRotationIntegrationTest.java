@@ -3,7 +3,7 @@ package com.yourorg.tokenisation;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.kms.KmsProvider;
@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Uses the same {@link #setUpForRotationTest()} as
  * {@link ScheduledRotationIntegrationTest} — the seed key is restored to ACTIVE
- * with a real checksum before each test.
+ * with real DEK material before each test.
  */
 class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
 
@@ -54,7 +54,7 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private KeyRotationService keyRotationService;
     @Autowired private RotationJob rotationJob;
-    @Autowired private InMemoryKekKeyRing keyRing;
+    @Autowired private InMemoryDekKeyRing dekRing;
     @Autowired private KmsProvider kmsProvider;
 
     @BeforeEach
@@ -62,17 +62,17 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
         jdbcTemplate.execute("DELETE FROM token_vault");
         jdbcTemplate.execute("DELETE FROM token_audit_log");
         jdbcTemplate.execute(
-                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid AND key_type = 'KEK'");
+                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid AND key_type = 'DEK'");
         jdbcTemplate.execute(
                 "UPDATE key_versions SET status = 'ACTIVE' WHERE id = '" + SEED_KEY_VERSION_ID + "'::uuid");
 
-        KeyVersion seedKey = keyVersionRepository.findActiveKekOrThrow();
-        byte[] seedKek = kmsProvider.unwrapKek(seedKey.getEncryptedKekBlob());
+        KeyVersion seedKey = keyVersionRepository.findActiveDekOrThrow();
+        byte[] seedDek = kmsProvider.decryptDataKey(seedKey.getEncryptedDekBlob());
         try {
-            keyRing.load(SEED_KEY_VERSION_ID, seedKek, seedKey.getRotateBy());
-            keyRing.promoteActive(SEED_KEY_VERSION_ID);
+            dekRing.load(SEED_KEY_VERSION_ID, seedDek, seedKey.getRotateBy());
+            dekRing.promoteActive(SEED_KEY_VERSION_ID);
         } finally {
-            Arrays.fill(seedKek, (byte) 0);
+            Arrays.fill(seedDek, (byte) 0);
         }
     }
 
@@ -106,7 +106,7 @@ class EmergencyRotationIntegrationTest extends AbstractIntegrationTest {
 
         keyRotationService.initiateEmergencyRotation(compromisedKeyId, "emergency-key-v2");
 
-        assertThat(keyVersionRepository.findActiveKek())
+        assertThat(keyVersionRepository.findActiveDek())
                 .isPresent()
                 .get()
                 .satisfies(kv -> assertThat(kv.getId()).isNotEqualTo(compromisedKeyId));

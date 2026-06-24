@@ -1,5 +1,6 @@
 package com.yourorg.tokenisation;
 
+import com.yourorg.tokenisation.kms.DataKey;
 import com.yourorg.tokenisation.kms.KmsProvider;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -38,9 +39,10 @@ import java.util.Arrays;
  *
  * <p>A single KMS master key is created in LocalStack during static initialisation and
  * its ARN is registered as {@code kms.aws.master-key-arn} via {@link DynamicPropertySource}.
- * The {@link LocalStackSeedConfig} then seeds an ACTIVE KEK row (encrypted by the LocalStack
- * KMS key) and an ACTIVE HMAC row (encrypted by the KEK using AES-GCM) before
- * {@code KeyRingInitialiser} runs — matching the seeding pattern in {@link AbstractIntegrationTest}.
+ * The {@link LocalStackSeedConfig} then seeds an ACTIVE DEK row (encrypted by the LocalStack
+ * KMS key via {@code GenerateDataKey}) and an ACTIVE HMAC row (encrypted by the LocalStack
+ * KMS key via {@code Encrypt}) before {@code KeyRingInitialiser} runs — matching the seeding
+ * pattern in {@link AbstractIntegrationTest}.
  *
  * <p>AWS SDK system-property credentials ({@code aws.accessKeyId=test},
  * {@code aws.secretAccessKey=test}) are set in the static block so the production
@@ -55,8 +57,8 @@ import java.util.Arrays;
 @Import(AbstractLocalStackIntegrationTest.LocalStackSeedConfig.class)
 public abstract class AbstractLocalStackIntegrationTest {
 
-    /** Key alias used to discover the seed KEK row in assertions and @BeforeEach resets. */
-    protected static final String SEED_KEK_ALIAS  = "ls-kek-seed";
+    /** Key alias used to discover the seed DEK row in assertions and @BeforeEach resets. */
+    protected static final String SEED_DEK_ALIAS  = "ls-dek-seed";
 
     /** Key alias used to discover the seed HMAC row in assertions and @BeforeEach resets. */
     protected static final String SEED_HMAC_ALIAS = "ls-hmac-seed";
@@ -83,7 +85,7 @@ public abstract class AbstractLocalStackIntegrationTest {
                 .withServices(LocalStackContainer.Service.KMS);
         LOCALSTACK.start();
 
-        // Create the single master key; HMAC secrets are wrapped at app level, not by a separate KMS key
+        // Create the single master key; HMAC secrets and DEKs are both protected by this key
         try (KmsClient setup = KmsClient.builder()
                 .region(Region.US_EAST_1)
                 .endpointOverride(LOCALSTACK.getEndpointOverride(LocalStackContainer.Service.KMS))
@@ -91,7 +93,7 @@ public abstract class AbstractLocalStackIntegrationTest {
                         AwsBasicCredentials.create("test", "test")))
                 .build()) {
             KMS_KEY_ARN = setup.createKey(CreateKeyRequest.builder()
-                    .description("card-tokenisation-kek-localstack-test")
+                    .description("card-tokenisation-localstack-test")
                     .keyUsage(KeyUsageType.ENCRYPT_DECRYPT)
                     .build())
                     .keyMetadata().arn();
@@ -111,12 +113,13 @@ public abstract class AbstractLocalStackIntegrationTest {
     }
 
     /**
-     * Seeds an ACTIVE KEK row and an ACTIVE HMAC row before {@code KeyRingInitialiser} runs.
+     * Seeds an ACTIVE DEK row and an ACTIVE HMAC row before {@code KeyRingInitialiser} runs.
      *
-     * <p>The KEK plaintext is generated locally and encrypted via LocalStack KMS using the
-     * {@code purpose=kek-unwrap} context (matching {@link com.yourorg.tokenisation.kms.AwsKmsAdapter#unwrapKek}).
-     * The HMAC secret is encrypted directly via LocalStack KMS using the {@code purpose=hmac-key}
-     * context (matching {@link com.yourorg.tokenisation.kms.AwsKmsAdapter#wrapNewHmacKey}).
+     * <p>The DEK is generated atomically via LocalStack KMS {@code GenerateDataKey}
+     * (matching {@link com.yourorg.tokenisation.kms.AwsKmsAdapter#generateDataKey}).
+     * The HMAC secret is generated locally and encrypted via LocalStack KMS
+     * {@code Encrypt} with {@code purpose=hmac-key} context
+     * (matching {@link com.yourorg.tokenisation.kms.AwsKmsAdapter#wrapNewHmacKey}).
      *
      * <p>Both insertions are idempotent — the runner checks for existing rows by alias
      * and skips if already present (safe for repeated context loads within the same JVM).
@@ -130,24 +133,18 @@ public abstract class AbstractLocalStackIntegrationTest {
                 KmsProvider kmsProvider,
                 JdbcTemplate jdbc) {
             return args -> {
-                Boolean hasKek = jdbc.queryForObject(
-                        "SELECT EXISTS(SELECT 1 FROM key_versions WHERE key_type='KEK' AND key_alias=?)",
-                        Boolean.class, SEED_KEK_ALIAS);
-                if (Boolean.TRUE.equals(hasKek)) return;
+                Boolean hasDek = jdbc.queryForObject(
+                        "SELECT EXISTS(SELECT 1 FROM key_versions WHERE key_type='DEK' AND key_alias=?)",
+                        Boolean.class, SEED_DEK_ALIAS);
+                if (Boolean.TRUE.equals(hasDek)) return;
 
+                // Generate DEK via LocalStack KMS GenerateDataKey — returns encrypted blob atomically
+                DataKey dataKey = kmsProvider.generateDataKey();
+                byte[] encryptedDekBlob = dataKey.encryptedDekBlob().clone();
+                Arrays.fill(dataKey.plaintextDek(), (byte) 0);
+
+                // Wrap HMAC secret directly via LocalStack KMS (purpose=hmac-key)
                 SecureRandom rng = new SecureRandom();
-
-                // Wrap KEK via LocalStack KMS (purpose=kek-unwrap)
-                byte[] kekBytes = new byte[32];
-                rng.nextBytes(kekBytes);
-                String b64KekBlob;
-                try {
-                    b64KekBlob = kmsProvider.wrapNewKek(kekBytes);
-                } finally {
-                    Arrays.fill(kekBytes, (byte) 0);
-                }
-
-                // Wrap HMAC secret directly via LocalStack KMS (purpose=hmac-key) — no KEK involvement
                 byte[] hmacBytes = new byte[32];
                 rng.nextBytes(hmacBytes);
                 byte[] encryptedSecret;
@@ -160,10 +157,10 @@ public abstract class AbstractLocalStackIntegrationTest {
                 Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 3600));
                 jdbc.update("""
                         INSERT INTO key_versions (kms_key_id, kms_provider, key_alias,
-                            encrypted_kek_blob, key_type, status, activated_at, rotate_by, created_by)
-                        VALUES ('localstack', 'AWS_KMS', ?, ?, 'KEK', 'ACTIVE', now(), ?, ?)
+                            encrypted_dek_blob, key_type, status, activated_at, rotate_by, created_by)
+                        VALUES (?, 'AWS_KMS', ?, ?, 'DEK', 'ACTIVE', now(), ?, ?)
                         """,
-                        SEED_KEK_ALIAS, b64KekBlob, rotateBy, "localstack-seeder");
+                        KMS_KEY_ARN, SEED_DEK_ALIAS, encryptedDekBlob, rotateBy, "localstack-seeder");
 
                 jdbc.update("""
                         INSERT INTO key_versions (kms_key_id, kms_provider, key_alias,

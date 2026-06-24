@@ -6,13 +6,13 @@ import java.time.Instant;
 import java.util.Arrays;
 
 /**
- * Holds the in-memory representation of a loaded Key Encryption Key (KEK).
+ * Holds the in-memory representation of a loaded Data Encryption Key (DEK).
  *
- * <p>Instances of this class are stored in {@link InMemoryKekKeyRing} and are created
- * once at startup (or during rotation) when the KEK bytes are unwrapped from KMS.
+ * <p>Instances of this class are stored in {@link InMemoryDekKeyRing} and are created
+ * once at startup (or during rotation) when the DEK bytes are decrypted from KMS.
  *
- * <p>The raw KEK bytes are held in a private {@code byte[]} field. Access is provided
- * only through {@link #copyKek()}, which returns a defensive copy — callers are
+ * <p>The raw DEK bytes are held in a private {@code byte[]} field. Access is provided
+ * only through {@link #copyDek()}, which returns a defensive copy — callers are
  * responsible for zeroing the returned array after use.
  *
  * <p>This class is immutable except for the {@code status} field, which is set to
@@ -21,7 +21,7 @@ import java.util.Arrays;
 public final class KeyMaterial {
 
     private final String keyVersionId;
-    private final byte[] kek;
+    private final byte[] dek;
     private final Instant expiresAt;
     private volatile KeyStatus status;
 
@@ -29,63 +29,48 @@ public final class KeyMaterial {
      * Constructs a {@code KeyMaterial} for an active key version.
      *
      * @param keyVersionId the key version UUID string from {@code key_versions.id}; must not be null
-     * @param kek          the raw 32-byte KEK bytes; a defensive copy is taken; must be exactly 32 bytes
+     * @param dek          the raw 32-byte DEK bytes; a defensive copy is taken; must be exactly 32 bytes
      * @param expiresAt    the TTL after which this key ring entry must be refreshed from KMS; must not be null
-     * @throws IllegalArgumentException if {@code kek} is null or not exactly 32 bytes
+     * @throws IllegalArgumentException if {@code dek} is null or not exactly 32 bytes
      */
-    public KeyMaterial(String keyVersionId, byte[] kek, Instant expiresAt) {
-        if (kek == null || kek.length != 32) {
+    public KeyMaterial(String keyVersionId, byte[] dek, Instant expiresAt) {
+        if (dek == null || dek.length != 32) {
             throw new IllegalArgumentException(
-                    "KEK must be exactly 32 bytes; got: " + (kek == null ? "null" : kek.length));
+                    "DEK must be exactly 32 bytes; got: " + (dek == null ? "null" : dek.length));
         }
         this.keyVersionId = keyVersionId;
-        this.kek = kek.clone();
+        this.dek = dek.clone();
         this.expiresAt = expiresAt;
         this.status = KeyStatus.ACTIVE;
     }
 
-    /**
-     * Returns the key version UUID this material belongs to.
-     *
-     * @return the key version ID string
-     */
     public String keyVersionId() {
         return keyVersionId;
     }
 
     /**
-     * Returns a defensive copy of the raw KEK bytes.
+     * Returns a defensive copy of the raw DEK bytes.
      *
      * <p>The caller is responsible for zeroing the returned array after use:
      * <pre>{@code
-     * byte[] kek = keyMaterial.copyKek();
+     * byte[] dek = keyMaterial.copyDek();
      * try {
-     *     // use kek
+     *     // use dek
      * } finally {
-     *     Arrays.fill(kek, (byte) 0);
+     *     Arrays.fill(dek, (byte) 0);
      * }
      * }</pre>
      *
-     * @return copy of the 32-byte KEK
+     * @return copy of the 32-byte DEK
      */
-    public byte[] copyKek() {
-        return kek.clone();
+    public byte[] copyDek() {
+        return dek.clone();
     }
 
-    /**
-     * Returns the TTL instant after which the KEK must be refreshed from KMS.
-     *
-     * @return the expiry instant
-     */
     public Instant expiresAt() {
         return expiresAt;
     }
 
-    /**
-     * Returns the current lifecycle status of this key material.
-     *
-     * @return current status ({@code ACTIVE}, {@code ROTATING}, or {@code RETIRED})
-     */
     public KeyStatus status() {
         return status;
     }
@@ -93,14 +78,11 @@ public final class KeyMaterial {
     /**
      * Returns a copy of this {@code KeyMaterial} with status set to {@code RETIRED}.
      *
-     * <p>The original instance is unchanged. The retired copy shares the same KEK bytes
-     * (via its own defensive copy) so that detokenisation of old records remains possible
-     * after rotation completes.
-     *
-     * @return a new {@code KeyMaterial} with {@code status = RETIRED} and the same KEK and expiry
+     * <p>The retired copy retains the DEK bytes so that detokenisation of old records
+     * remains possible after rotation completes.
      */
     public KeyMaterial asRetired() {
-        KeyMaterial retired = new KeyMaterial(keyVersionId, kek, expiresAt);
+        KeyMaterial retired = new KeyMaterial(keyVersionId, dek, expiresAt);
         retired.status = KeyStatus.RETIRED;
         return retired;
     }
@@ -108,26 +90,22 @@ public final class KeyMaterial {
     /**
      * Returns a copy of this {@code KeyMaterial} with status set to {@code COMPROMISED}.
      *
-     * <p>The original instance is unchanged. The compromised copy retains its KEK bytes
-     * so that the rotation batch can still unwrap existing DEKs for re-encryption under
-     * the new key — but the detokenisation service will reject it immediately.
-     *
-     * @return a new {@code KeyMaterial} with {@code status = COMPROMISED} and the same KEK and expiry
+     * <p>The compromised copy retains its DEK bytes so that the rotation batch can still
+     * decrypt existing PANs for re-encryption — but the detokenisation service will reject it.
      */
     public KeyMaterial asCompromised() {
-        KeyMaterial compromised = new KeyMaterial(keyVersionId, kek, expiresAt);
+        KeyMaterial compromised = new KeyMaterial(keyVersionId, dek, expiresAt);
         compromised.status = KeyStatus.COMPROMISED;
         return compromised;
     }
 
     /**
-     * Zeros the KEK bytes held by this instance.
+     * Zeros the DEK bytes held by this instance.
      *
-     * <p>Call this only when the key version is fully decommissioned and no further
-     * operations will need this key material. After calling this method the instance
-     * must not be used for any cryptographic operation.
+     * <p>Call only when the key version is fully decommissioned. After calling this method
+     * the instance must not be used for any cryptographic operation.
      */
     public void zero() {
-        Arrays.fill(kek, (byte) 0);
+        Arrays.fill(dek, (byte) 0);
     }
 }

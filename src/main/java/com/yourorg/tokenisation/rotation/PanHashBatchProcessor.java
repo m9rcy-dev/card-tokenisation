@@ -4,7 +4,7 @@ import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.crypto.PanHasher;
 import com.yourorg.tokenisation.domain.KeyStatus;
@@ -35,10 +35,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <h3>Per-record flow</h3>
  * <ol>
- *   <li>Load the KEK for the record's key version from {@link InMemoryKekKeyRing}.
- *   <li>If that KEK is {@code COMPROMISED}, skip the record (emit
+ *   <li>Load the DEK for the record's key version from {@link InMemoryDekKeyRing}.
+ *   <li>If that DEK is {@code COMPROMISED}, skip the record (emit
  *       {@link AuditEventType#RE_HASH_SKIPPED_COMPROMISED_KEY}); it will be processed
- *       after the KEK rotation batch re-wraps its DEK.
+ *       after the DEK rotation batch re-encrypts its PAN.
  *   <li>Decrypt the PAN using {@link AesGcmCipher#decrypt}.
  *   <li>Compute a new HMAC-SHA256 via {@link PanHasher#hashWithVersion} using the new version.
  *   <li>Update {@code token_vault.pan_hash} and {@code hmac_key_version_id} and save.
@@ -59,7 +59,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class PanHashBatchProcessor {
 
     private final TokenVaultRepository tokenVaultRepository;
-    private final InMemoryKekKeyRing keyRing;
+    private final InMemoryDekKeyRing dekRing;
     private final AesGcmCipher cipher;
     private final PanHasher panHasher;
     private final AuditLogger auditLogger;
@@ -76,13 +76,13 @@ public class PanHashBatchProcessor {
     PanHashBatchProcessor self;
 
     public PanHashBatchProcessor(TokenVaultRepository tokenVaultRepository,
-                                  InMemoryKekKeyRing keyRing,
+                                  InMemoryDekKeyRing dekRing,
                                   AesGcmCipher cipher,
                                   PanHasher panHasher,
                                   AuditLogger auditLogger,
                                   RotationProperties rotationProperties) {
         this.tokenVaultRepository = tokenVaultRepository;
-        this.keyRing = keyRing;
+        this.dekRing = dekRing;
         this.cipher = cipher;
         this.panHasher = panHasher;
         this.auditLogger = auditLogger;
@@ -163,25 +163,24 @@ public class PanHashBatchProcessor {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void rehashSingleVault(TokenVault vault, UUID newHmacVersionId) {
-        String kekVersionId = vault.getKeyVersion().getId().toString();
-        KeyMaterial kekMaterial = keyRing.getByVersion(kekVersionId);
+        String dekVersionId = vault.getKeyVersion().getId().toString();
+        KeyMaterial dekMaterial = dekRing.getByVersion(dekVersionId);
 
-        // Skip records whose KEK is compromised — they can be re-hashed after KEK rotation completes
-        if (kekMaterial.status() == KeyStatus.COMPROMISED) {
-            log.warn("Skipping HMAC re-hash for token [{}]: KEK version [{}] is COMPROMISED",
-                    vault.getTokenId(), kekVersionId);
+        // Skip records whose DEK is compromised — they can be re-hashed after DEK rotation completes
+        if (dekMaterial.status() == KeyStatus.COMPROMISED) {
+            log.warn("Skipping HMAC re-hash for token [{}]: DEK version [{}] is COMPROMISED",
+                    vault.getTokenId(), dekVersionId);
             auditLogger.logSuccess(
                     AuditEventType.RE_HASH_SKIPPED_COMPROMISED_KEY,
                     vault.getTokenId(), null, null, null);
             return;
         }
 
-        byte[] kek = kekMaterial.copyKek();
+        byte[] dek = dekMaterial.copyDek();
         byte[] panBytes = null;
         try {
             panBytes = cipher.decrypt(
-                    vault.getEncryptedPan(), vault.getIv(), vault.getAuthTag(),
-                    vault.getEncryptedDek(), kek);
+                    vault.getEncryptedPan(), vault.getIv(), vault.getAuthTag(), dek);
 
             String pan = new String(panBytes, StandardCharsets.UTF_8);
             String newHash = panHasher.hashWithVersion(pan, newHmacVersionId.toString());
@@ -195,7 +194,7 @@ public class PanHashBatchProcessor {
 
             log.debug("Re-hashed token [{}] → HMAC version [{}]", vault.getTokenId(), newHmacVersionId);
         } finally {
-            Arrays.fill(kek, (byte) 0);
+            Arrays.fill(dek, (byte) 0);
             if (panBytes != null) Arrays.fill(panBytes, (byte) 0);
         }
     }

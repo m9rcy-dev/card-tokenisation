@@ -4,7 +4,7 @@ import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
 import com.yourorg.tokenisation.config.RotationProperties;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.RotationReason;
 import com.yourorg.tokenisation.kms.KmsProvider;
@@ -60,11 +60,11 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
     @Autowired private KeyRotationService keyRotationService;
     @Autowired private RotationJob rotationJob;
     @Autowired private RotationProperties rotationProperties;
-    @Autowired private InMemoryKekKeyRing keyRing;
+    @Autowired private InMemoryDekKeyRing dekRing;
     @Autowired private KmsProvider kmsProvider;
     @Autowired private BulkTokenSeeder bulkSeeder;
 
-    /** Token strings for the 10K pre-seeded tokens — populated by {@link #setUpForRotationTest()}. */
+    /** Token strings for the pre-seeded tokens — populated by {@link #setUpForRotationTest()}. */
     private String[] seededTokens;
 
     @BeforeEach
@@ -72,21 +72,21 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
         jdbcTemplate.execute("DELETE FROM token_vault");
         jdbcTemplate.execute("DELETE FROM token_audit_log");
 
-        // Retire any KEK versions left by a previous test, reset seed key to ACTIVE.
-        // Scoped to key_type='KEK' so HMAC rows are untouched.
+        // Retire any DEK versions left by a previous test, reset seed key to ACTIVE.
+        // Scoped to key_type='DEK' so HMAC rows are untouched.
         jdbcTemplate.execute(
-                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid AND key_type = 'KEK'");
+                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid AND key_type = 'DEK'");
         jdbcTemplate.execute(
                 "UPDATE key_versions SET status = 'ACTIVE' WHERE id = '" + SEED_KEY_VERSION_ID + "'::uuid");
 
-        // Reload seed key into ring and re-promote it
-        KeyVersion seedKey = keyVersionRepository.findActiveKekOrThrow();
-        byte[] seedKek = kmsProvider.unwrapKek(seedKey.getEncryptedKekBlob());
+        // Reload seed DEK into ring and re-promote it
+        KeyVersion seedKey = keyVersionRepository.findActiveDekOrThrow();
+        byte[] seedDek = kmsProvider.decryptDataKey(seedKey.getEncryptedDekBlob());
         try {
-            keyRing.load(SEED_KEY_VERSION_ID, seedKek, seedKey.getRotateBy());
-            keyRing.promoteActive(SEED_KEY_VERSION_ID);
+            dekRing.load(SEED_KEY_VERSION_ID, seedDek, seedKey.getRotateBy());
+            dekRing.promoteActive(SEED_KEY_VERSION_ID);
         } finally {
-            Arrays.fill(seedKek, (byte) 0);
+            Arrays.fill(seedDek, (byte) 0);
         }
 
         // Pre-seed tokens under the seed key (parallel, not measured for latency)
@@ -253,7 +253,7 @@ class KeyRotationUnderLoadTest extends AbstractLoadTest {
      * LT-R-4: 100,000 pre-seeded tokens · all migrated to new key · heap growth ≤ 512MB.
      *
      * <p>Tokens are seeded via JDBC bulk insert (not HTTP) so setup completes in seconds
-     * rather than minutes. Rotation uses the parallel rewrap executor — the actual
+     * rather than minutes. Rotation uses the parallel re-encryption executor — the actual
      * throughput is captured in the result file for capacity planning.
      *
      * <p>Run with: {@code mvn test -P load-tests -Dtest="*100000*"}

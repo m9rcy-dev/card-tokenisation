@@ -41,7 +41,7 @@ import static org.mockito.Mockito.*;
  *   <li>Happy path — new token creation and de-dup return
  *   <li>De-dup — existing token for same PAN is returned without new vault record
  *   <li>PAN validation — null, blank, non-numeric, Luhn-invalid
- *   <li>Key ring empty — {@link IllegalStateException} from {@link InMemoryKekKeyRing#getActive()}
+ *   <li>Key ring empty — {@link IllegalStateException} from {@link InMemoryDekKeyRing#getActive()}
  *   <li>Token revocation — deactivation and audit
  * </ul>
  */
@@ -56,7 +56,7 @@ class TokenisationServiceTest {
 
     @Mock private AesGcmCipher cipher;
     @Mock private PanHasher panHasher;
-    @Mock private InMemoryKekKeyRing keyRing;
+    @Mock private InMemoryDekKeyRing dekRing;
     @Mock private InMemoryHmacKeyRing hmacKeyRing;
     @Mock private TokenVaultRepository tokenVaultRepository;
     @Mock private KeyVersionRepository keyVersionRepository;
@@ -66,7 +66,7 @@ class TokenisationServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new TokenisationService(cipher, panHasher, keyRing, hmacKeyRing,
+        service = new TokenisationService(cipher, panHasher, dekRing, hmacKeyRing,
                 tokenVaultRepository, keyVersionRepository, auditLogger, TOKEN_TTL_DAYS);
     }
 
@@ -81,7 +81,7 @@ class TokenisationServiceTest {
 
         when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
-        when(keyRing.getActive()).thenReturn(activeKey);
+        when(dekRing.getActive()).thenReturn(activeKey);
         when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -138,7 +138,6 @@ class TokenisationServiceTest {
         String oldHash = "old-pan-hash-value";
         TokenVault existingVault = buildExistingVault();
 
-        // New hash misses; old rotating version ID is present in the ring
         when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
         when(hmacKeyRing.findRotatingVersionId()).thenReturn(Optional.of(oldHmacVersionId));
@@ -162,13 +161,12 @@ class TokenisationServiceTest {
         KeyVersion activeVersion = buildKeyVersion();
         EncryptResult encryptResult = buildEncryptResult();
 
-        // Both new hash and old hash miss → genuinely new PAN
         when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
         when(hmacKeyRing.findRotatingVersionId()).thenReturn(Optional.of(oldHmacVersionId));
         when(panHasher.hashWithVersion(VALID_PAN, oldHmacVersionId)).thenReturn(oldHash);
         when(tokenVaultRepository.findActiveByPanHash(oldHash)).thenReturn(Optional.empty());
-        when(keyRing.getActive()).thenReturn(activeKey);
+        when(dekRing.getActive()).thenReturn(activeKey);
         when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -240,7 +238,7 @@ class TokenisationServiceTest {
 
         when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
-        when(keyRing.getActive()).thenThrow(new IllegalStateException("No active key version has been promoted in the key ring"));
+        when(dekRing.getActive()).thenThrow(new IllegalStateException("No active key version has been promoted in the key ring"));
 
         assertThatThrownBy(() -> service.tokenise(request))
                 .isInstanceOf(TokenisationException.class);
@@ -260,7 +258,7 @@ class TokenisationServiceTest {
 
         when(panHasher.hash(VALID_PAN)).thenReturn(VALID_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(VALID_PAN_HASH)).thenReturn(Optional.empty());
-        when(keyRing.getActive()).thenReturn(activeKey);
+        when(dekRing.getActive()).thenReturn(activeKey);
         when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenThrow(
                 new com.yourorg.tokenisation.crypto.EncryptionException("AES-GCM encryption failed"));
@@ -331,7 +329,7 @@ class TokenisationServiceTest {
         when(tokenVaultRepository.findActiveByToken(vault.getToken())).thenReturn(Optional.of(vault));
         when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.empty());
-        when(keyRing.getActive()).thenReturn(activeKey);
+        when(dekRing.getActive()).thenReturn(activeKey);
         when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -354,7 +352,7 @@ class TokenisationServiceTest {
         when(tokenVaultRepository.findActiveByToken(vault.getToken())).thenReturn(Optional.of(vault));
         when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.empty());
-        when(keyRing.getActive()).thenReturn(activeKey);
+        when(dekRing.getActive()).thenReturn(activeKey);
         when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -373,14 +371,12 @@ class TokenisationServiceTest {
 
         when(tokenVaultRepository.findActiveByToken(vault.getToken())).thenReturn(Optional.of(vault));
         when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
-        // findActiveByPanHash returns THE SAME vault — identity case, no conflict
         when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.of(vault));
-        when(keyRing.getActive()).thenReturn(activeKey);
+        when(dekRing.getActive()).thenReturn(activeKey);
         when(keyVersionRepository.findById(any(UUID.class))).thenReturn(Optional.of(activeVersion));
         when(cipher.encrypt(any(), any())).thenReturn(encryptResult);
         when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        // Should not throw
         service.replaceCard(vault.getToken(), buildReplacementRequest(NEW_PAN));
 
         verify(tokenVaultRepository).save(vault);
@@ -399,7 +395,7 @@ class TokenisationServiceTest {
     @Test
     void replaceCard_newPanAlreadyHasDifferentToken_throwsCardAlreadyTokenisedException() {
         TokenVault existingVault = buildExistingVault();
-        TokenVault differentVault = buildExistingVault(); // different tokenId
+        TokenVault differentVault = buildExistingVault();
 
         when(tokenVaultRepository.findActiveByToken(existingVault.getToken()))
                 .thenReturn(Optional.of(existingVault));
@@ -416,7 +412,6 @@ class TokenisationServiceTest {
 
     @Test
     void replaceCard_luhnInvalidNewPan_throwsPanValidationException() {
-        // PAN validation runs before the repository lookup — no stubbing needed
         assertThatThrownBy(() -> service.replaceCard("any-token", buildReplacementRequest("4111111111111112")))
                 .isInstanceOf(PanValidationException.class)
                 .hasMessageContaining("Luhn");
@@ -426,7 +421,6 @@ class TokenisationServiceTest {
 
     @Test
     void replaceCard_nullPan_throwsPanValidationException() {
-        // PAN validation runs before the repository lookup — no stubbing needed
         assertThatThrownBy(() -> service.replaceCard("any-token", buildReplacementRequest(null)))
                 .isInstanceOf(PanValidationException.class);
     }
@@ -438,7 +432,7 @@ class TokenisationServiceTest {
         when(tokenVaultRepository.findActiveByToken(vault.getToken())).thenReturn(Optional.of(vault));
         when(panHasher.hash(NEW_PAN)).thenReturn(NEW_HASH_RESULT);
         when(tokenVaultRepository.findActiveByPanHash(NEW_PAN_HASH)).thenReturn(Optional.empty());
-        when(keyRing.getActive()).thenThrow(new IllegalStateException("No active key"));
+        when(dekRing.getActive()).thenThrow(new IllegalStateException("No active key"));
 
         assertThatThrownBy(() -> service.replaceCard(vault.getToken(), buildReplacementRequest(NEW_PAN)))
                 .isInstanceOf(TokenisationException.class);
@@ -471,8 +465,8 @@ class TokenisationServiceTest {
     }
 
     private KeyMaterial buildKeyMaterial() {
-        byte[] kek = new byte[32];
-        return new KeyMaterial(UUID.randomUUID().toString(), kek, Instant.now().plusSeconds(3600));
+        byte[] dek = new byte[32];
+        return new KeyMaterial(UUID.randomUUID().toString(), dek, Instant.now().plusSeconds(3600));
     }
 
     private KeyVersion buildKeyVersion() {
@@ -480,7 +474,7 @@ class TokenisationServiceTest {
                 .kmsKeyId("local-dev-key")
                 .kmsProvider("LOCAL_DEV")
                 .keyAlias("test-key")
-                .encryptedKekBlob("ignored")
+                .encryptedDekBlob(new byte[60])
                 .status(KeyStatus.ACTIVE)
                 .activatedAt(Instant.now())
                 .rotateBy(Instant.now().plusSeconds(365L * 24 * 60 * 60))
@@ -492,8 +486,7 @@ class TokenisationServiceTest {
         byte[] ciphertext = new byte[16];
         byte[] iv = new byte[12];
         byte[] authTag = new byte[16];
-        byte[] encryptedDek = new byte[60];
-        return new EncryptResult(ciphertext, iv, authTag, encryptedDek);
+        return new EncryptResult(ciphertext, iv, authTag);
     }
 
     private TokenVault buildExistingVault() {
@@ -502,7 +495,6 @@ class TokenisationServiceTest {
                 .encryptedPan(new byte[16])
                 .iv(new byte[12])
                 .authTag(new byte[16])
-                .encryptedDek(new byte[60])
                 .keyVersion(buildKeyVersion())
                 .panHash(VALID_PAN_HASH)
                 .lastFour("1111")

@@ -54,23 +54,6 @@ class DetokenisationIntegrationTest extends AbstractIntegrationTest {
     void cleanDatabase() {
         jdbcTemplate.execute("DELETE FROM token_vault");
         jdbcTemplate.execute("DELETE FROM token_audit_log");
-        Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 60 * 60));
-        jdbcTemplate.update("""
-                INSERT INTO key_versions (id, kms_key_id, kms_provider, key_alias, encrypted_kek_blob,
-                    key_type, status, activated_at, rotate_by, created_by)
-                VALUES (?::uuid, ?, ?, ?, ?, ?, ?, now(), ?, ?)
-                ON CONFLICT (id) DO NOTHING
-                """,
-                SEED_KEY_VERSION_ID,
-                "local-dev-key",
-                "LOCAL_DEV",
-                "integration-test-seed-key",
-                "ignored",
-                "KEK",
-                "ACTIVE",
-                rotateBy,
-                "test-seeder"
-        );
     }
 
     // ── Round-trip PAN recovery ──────────────────────────────────────────────

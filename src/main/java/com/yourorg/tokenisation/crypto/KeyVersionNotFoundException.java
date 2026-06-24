@@ -3,7 +3,7 @@ package com.yourorg.tokenisation.crypto;
 import com.yourorg.tokenisation.exception.TokenisationException;
 
 /**
- * Thrown when a requested key version is not found in the {@link InMemoryKekKeyRing}.
+ * Thrown when a requested key version is not found in the key ring.
  *
  * <p>This exception indicates a programming error or an unexpected state:
  * the key version was not loaded at startup (e.g. it was already retired before the

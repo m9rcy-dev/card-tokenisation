@@ -12,11 +12,11 @@ import java.util.UUID;
 /**
  * JPA entity representing one issued token in the {@code token_vault} table.
  *
- * <p>A token vault record stores the encrypted form of a PAN together with all
- * cryptographic material needed to decrypt it later. The PAN itself is never stored
+ * <p>A token vault record stores the encrypted form of a PAN. The PAN itself is never stored
  * in plain text — only its AES-256-GCM ciphertext ({@code encryptedPan}), the
- * per-record IV ({@code iv}), the GCM authentication tag ({@code authTag}), and
- * the KEK-wrapped DEK ({@code encryptedDek}) are persisted.
+ * per-record IV ({@code iv}), and the GCM authentication tag ({@code authTag}) are persisted.
+ * The DEK used to encrypt the PAN is held in the in-memory key ring and identified by
+ * {@code keyVersion} — no per-record DEK blob is stored.
  *
  * <p>{@code panHash} is an HMAC-SHA256 of the PAN used for de-duplication.
  * It does not allow PAN recovery.
@@ -67,16 +67,8 @@ public class TokenVault {
     private byte[] authTag;
 
     /**
-     * The per-record Data Encryption Key (DEK) wrapped by the active KEK.
-     * Updated during key rotation to wrap the same DEK under the new KEK,
-     * without re-encrypting the PAN ciphertext itself.
-     */
-    @Column(name = "encrypted_dek", nullable = false)
-    private byte[] encryptedDek;
-
-    /**
-     * The key version whose KEK was used to wrap {@code encryptedDek}.
-     * Used to look up the correct key material in the in-memory key ring during detokenisation.
+     * The key version whose DEK was used to encrypt {@code encryptedPan}.
+     * Used to look up the correct DEK in the in-memory key ring during detokenisation.
      */
     @ManyToOne
     @JoinColumn(name = "key_version_id", nullable = false)
@@ -160,8 +152,7 @@ public class TokenVault {
      * @param encryptedPan   AES-256-GCM ciphertext of the PAN
      * @param iv             12-byte GCM IV used during PAN encryption
      * @param authTag        16-byte GCM authentication tag
-     * @param encryptedDek   DEK wrapped by the active KEK
-     * @param keyVersion     the key version whose KEK wrapped the DEK
+     * @param keyVersion     the DEK key version used to encrypt the PAN
      * @param panHash        HMAC-SHA256 of the PAN for de-duplication
      * @param lastFour       last four digits of the PAN (stored in clear)
      * @param cardScheme     payment scheme (may be {@code null})
@@ -176,7 +167,6 @@ public class TokenVault {
             byte[] encryptedPan,
             byte[] iv,
             byte[] authTag,
-            byte[] encryptedDek,
             KeyVersion keyVersion,
             String panHash,
             UUID hmacKeyVersionId,
@@ -190,7 +180,6 @@ public class TokenVault {
         this.encryptedPan = encryptedPan.clone();
         this.iv = iv.clone();
         this.authTag = authTag.clone();
-        this.encryptedDek = encryptedDek.clone();
         this.keyVersion = keyVersion;
         this.panHash = panHash;
         this.hmacKeyVersionId = hmacKeyVersionId;
@@ -217,16 +206,20 @@ public class TokenVault {
     }
 
     /**
-     * Replaces the wrapped DEK and updates the associated key version after re-encryption.
+     * Re-encrypts this vault record with a new DEK version.
      *
-     * <p>Called by the rotation batch processor after a successful DEK re-wrap.
-     * The PAN ciphertext and IV are unchanged — only the DEK wrapper changes.
+     * <p>Called by the rotation batch processor. PAN is briefly in memory during rotation,
+     * zeroed by the caller immediately after this method returns.
      *
-     * @param newEncryptedDek the DEK wrapped under the new KEK
-     * @param newKeyVersion   the new key version whose KEK was used
+     * @param newEncryptedPan AES-256-GCM ciphertext of the PAN under the new DEK
+     * @param newIv           fresh 12-byte GCM IV generated for this re-encryption
+     * @param newAuthTag      16-byte GCM authentication tag for the new ciphertext
+     * @param newKeyVersion   the new key version whose DEK was used
      */
-    public void reencryptDek(byte[] newEncryptedDek, KeyVersion newKeyVersion) {
-        this.encryptedDek = newEncryptedDek.clone();
+    public void reencryptPan(byte[] newEncryptedPan, byte[] newIv, byte[] newAuthTag, KeyVersion newKeyVersion) {
+        this.encryptedPan = newEncryptedPan.clone();
+        this.iv = newIv.clone();
+        this.authTag = newAuthTag.clone();
         this.keyVersion = newKeyVersion;
     }
 
@@ -244,17 +237,15 @@ public class TokenVault {
      * The token value, token ID, and creation timestamp are unchanged — downstream
      * systems continue using the same token with no updates required.
      *
-     * <p>A fresh DEK and IV are expected in the caller's {@code EncryptResult},
-     * consistent with the principle that key material is never reused across
-     * different plaintext values. The {@code keyVersion} is updated to the
-     * currently active version, so card replacement also migrates the record
-     * to the latest key.
+     * <p>A fresh IV is expected in the caller's {@code EncryptResult}, consistent
+     * with the principle that IV uniqueness is critical for GCM security.
+     * The {@code keyVersion} is updated to the currently active version, so card
+     * replacement also migrates the record to the latest DEK.
      *
      * @param newEncryptedPan  AES-256-GCM ciphertext of the new PAN
      * @param newIv            12-byte GCM IV generated fresh for this encryption
      * @param newAuthTag       16-byte GCM authentication tag
-     * @param newEncryptedDek  DEK wrapped under the active KEK
-     * @param newKeyVersion    key version whose KEK was used to wrap the new DEK
+     * @param newKeyVersion    key version whose DEK was used to encrypt the new PAN
      * @param newPanHash       HMAC-SHA256 of the new PAN for de-duplication
      * @param newLastFour      last four digits of the new PAN (stored in clear)
      * @param newCardScheme    payment scheme of the new card
@@ -266,7 +257,6 @@ public class TokenVault {
             byte[] newEncryptedPan,
             byte[] newIv,
             byte[] newAuthTag,
-            byte[] newEncryptedDek,
             KeyVersion newKeyVersion,
             String newPanHash,
             String newLastFour,
@@ -277,7 +267,6 @@ public class TokenVault {
         this.encryptedPan = newEncryptedPan.clone();
         this.iv = newIv.clone();
         this.authTag = newAuthTag.clone();
-        this.encryptedDek = newEncryptedDek.clone();
         this.keyVersion = newKeyVersion;
         this.panHash = newPanHash;
         this.lastFour = newLastFour;
@@ -314,12 +303,4 @@ public class TokenVault {
         return authTag.clone();
     }
 
-    /**
-     * Returns a defensive copy of the encrypted DEK bytes.
-     *
-     * @return copy of {@code encryptedDek}
-     */
-    public byte[] getEncryptedDek() {
-        return encryptedDek.clone();
-    }
 }

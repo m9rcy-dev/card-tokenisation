@@ -5,7 +5,7 @@ import java.time.Instant;
 /**
  * Common lifecycle contract shared by all versioned in-memory key rings.
  *
- * <p>Both the KEK ring ({@link InMemoryKekKeyRing}) and the HMAC ring
+ * <p>Both the DEK ring ({@link InMemoryDekKeyRing}) and the HMAC ring
  * ({@link InMemoryHmacKeyRing}) support loading, promoting, querying, and
  * retiring key versions. Ring-type-specific accessors (e.g. {@code getActive()}
  * returning {@link KeyMaterial}, or {@code getActiveSecret()} returning {@code byte[]})

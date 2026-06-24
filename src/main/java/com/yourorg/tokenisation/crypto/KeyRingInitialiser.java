@@ -14,22 +14,22 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Loads all active and rotating KEK versions from KMS into the {@link InMemoryKekKeyRing},
+ * Loads all active and rotating DEK versions from KMS into the {@link InMemoryDekKeyRing},
  * then decrypts and loads all active and rotating HMAC versions into the {@link InMemoryHmacKeyRing}.
  *
- * <p>Runs at {@code @Order(10)} — after seeders ({@code @Order(1)}) which ensure HMAC rows exist
- * before Phase 2 of this initialiser runs.
+ * <p>Runs at {@code @Order(10)} — after seeders ({@code @Order(1)}) which ensure DEK rows exist
+ * before Phase 1 of this initialiser runs.
  *
  * <p>Startup sequence:
  * <ol>
- *   <li><b>Phase 1 — KEK ring</b>: query {@code key_versions WHERE key_type='KEK'} for ACTIVE/ROTATING,
- *       unwrap each KEK blob via KMS, load into {@link InMemoryKekKeyRing}, promote the ACTIVE version.
+ *   <li><b>Phase 1 — DEK ring</b>: query {@code key_versions WHERE key_type='DEK'} for ACTIVE/ROTATING,
+ *       call {@code decryptDataKey(encryptedDekBlob)} per version, load into {@link InMemoryDekKeyRing},
+ *       promote the ACTIVE version.
  *   <li><b>Phase 2 — HMAC ring</b>: query {@code key_versions WHERE key_type='HMAC'} for ACTIVE/ROTATING,
- *       decrypt each HMAC secret using the loaded KEK (from the now-populated ring), load into
- *       {@link InMemoryHmacKeyRing}, promote the ACTIVE version.
+ *       decrypt each HMAC secret, load into {@link InMemoryHmacKeyRing}, promote the ACTIVE version.
  * </ol>
  *
- * <p>If no ACTIVE KEK or no ACTIVE HMAC key is found, startup fails fast.
+ * <p>If no ACTIVE DEK or no ACTIVE HMAC key is found, startup fails fast.
  */
 @Component
 @Order(10)
@@ -38,48 +38,48 @@ public class KeyRingInitialiser implements ApplicationRunner {
 
     private final KmsProvider kmsProvider;
     private final KeyVersionRepository keyVersionRepository;
-    private final InMemoryKekKeyRing keyRing;
+    private final InMemoryDekKeyRing dekRing;
     private final InMemoryHmacKeyRing hmacKeyRing;
 
     public KeyRingInitialiser(KmsProvider kmsProvider,
                               KeyVersionRepository keyVersionRepository,
-                              InMemoryKekKeyRing keyRing,
+                              InMemoryDekKeyRing dekRing,
                               InMemoryHmacKeyRing hmacKeyRing) {
         this.kmsProvider = kmsProvider;
         this.keyVersionRepository = keyVersionRepository;
-        this.keyRing = keyRing;
+        this.dekRing = dekRing;
         this.hmacKeyRing = hmacKeyRing;
     }
 
     @Override
     public void run(ApplicationArguments args) {
-        loadKekRing();
+        loadDekRing();
         loadHmacRing();
     }
 
-    // ── Phase 1: KEK ring ─────────────────────────────────────────────────────
+    // ── Phase 1: DEK ring ─────────────────────────────────────────────────────
 
-    private void loadKekRing() {
-        log.info("KeyRingInitialiser phase 1 — loading KEK versions");
-        List<KeyVersion> kekVersions = keyVersionRepository
-                .findKekByStatusIn(List.of(KeyStatus.ACTIVE, KeyStatus.ROTATING));
+    private void loadDekRing() {
+        log.info("KeyRingInitialiser phase 1 — loading DEK versions");
+        List<KeyVersion> dekVersions = keyVersionRepository
+                .findDekByStatusIn(List.of(KeyStatus.ACTIVE, KeyStatus.ROTATING));
 
-        for (KeyVersion kv : kekVersions) {
-            loadKekVersion(kv);
+        for (KeyVersion kv : dekVersions) {
+            loadDekVersion(kv);
         }
 
-        KeyVersion activeKek = keyVersionRepository.findActiveKekOrThrow();
-        keyRing.promoteActive(activeKek.getId().toString());
-        log.info("KEK ring initialised. Active version: {}", activeKek.getId());
+        KeyVersion activeDek = keyVersionRepository.findActiveDekOrThrow();
+        dekRing.promoteActive(activeDek.getId().toString());
+        log.info("DEK ring initialised. Active version: {}", activeDek.getId());
     }
 
-    private void loadKekVersion(KeyVersion kv) {
-        byte[] kek = kmsProvider.unwrapKek(kv.getEncryptedKekBlob());
+    private void loadDekVersion(KeyVersion kv) {
+        byte[] dek = kmsProvider.decryptDataKey(kv.getEncryptedDekBlob());
         try {
-            keyRing.load(kv.getId().toString(), kek, kv.getRotateBy());
-            log.info("Loaded KEK version {} (status: {}) into ring", kv.getId(), kv.getStatus());
+            dekRing.load(kv.getId().toString(), dek, kv.getRotateBy());
+            log.info("Loaded DEK version {} (status: {}) into ring", kv.getId(), kv.getStatus());
         } finally {
-            Arrays.fill(kek, (byte) 0);
+            Arrays.fill(dek, (byte) 0);
         }
     }
 

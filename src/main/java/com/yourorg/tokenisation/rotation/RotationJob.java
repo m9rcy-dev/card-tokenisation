@@ -3,7 +3,7 @@ package com.yourorg.tokenisation.rotation;
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import com.yourorg.tokenisation.repository.TokenVaultRepository;
@@ -18,9 +18,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Scheduled job that drives the KEK rotation batch re-encryption pipeline.
+ * Scheduled job that drives the DEK rotation batch re-encryption pipeline.
  *
- * <p>On each invocation, the job checks for any KEK version in {@code ROTATING} or
+ * <p>On each invocation, the job checks for any DEK version in {@code ROTATING} or
  * {@code COMPROMISED} status. If found, it delegates a batch to {@link RotationBatchProcessor}.
  * When all tokens have been migrated, the old key is retired.
  */
@@ -31,20 +31,20 @@ public class RotationJob {
     private final RotationBatchProcessor batchProcessor;
     private final KeyVersionRepository keyVersionRepository;
     private final TokenVaultRepository tokenVaultRepository;
-    private final InMemoryKekKeyRing keyRing;
+    private final InMemoryDekKeyRing dekRing;
     private final AuditLogger auditLogger;
     private final RotationProperties rotationProperties;
 
     public RotationJob(RotationBatchProcessor batchProcessor,
                        KeyVersionRepository keyVersionRepository,
                        TokenVaultRepository tokenVaultRepository,
-                       InMemoryKekKeyRing keyRing,
+                       InMemoryDekKeyRing dekRing,
                        AuditLogger auditLogger,
                        RotationProperties rotationProperties) {
         this.batchProcessor = batchProcessor;
         this.keyVersionRepository = keyVersionRepository;
         this.tokenVaultRepository = tokenVaultRepository;
-        this.keyRing = keyRing;
+        this.dekRing = dekRing;
         this.auditLogger = auditLogger;
         this.rotationProperties = rotationProperties;
     }
@@ -54,28 +54,28 @@ public class RotationJob {
     public void processRotationBatch() {
         Optional<KeyVersion> rotatingOpt = keyVersionRepository.findOldestPendingMigration();
         if (rotatingOpt.isEmpty()) {
-            log.debug("No ROTATING or COMPROMISED key version found — rotation batch skipped");
+            log.debug("No ROTATING or COMPROMISED DEK version found — rotation batch skipped");
             return;
         }
 
         KeyVersion rotatingKey = rotatingOpt.get();
         UUID oldKeyVersionId = rotatingKey.getId();
 
-        Optional<KeyVersion> activeOpt = keyVersionRepository.findActiveKek();
+        Optional<KeyVersion> activeOpt = keyVersionRepository.findActiveDek();
         if (activeOpt.isEmpty()) {
-            log.error("No ACTIVE key version found during rotation batch — cannot determine target key");
+            log.error("No ACTIVE DEK version found during rotation batch — cannot determine target key");
             return;
         }
 
         UUID newKeyVersionId = activeOpt.get().getId();
 
         if (oldKeyVersionId.equals(newKeyVersionId)) {
-            log.error("ROTATING and ACTIVE key versions are the same [{}] — rotation state is inconsistent",
+            log.error("ROTATING and ACTIVE DEK versions are the same [{}] — rotation state is inconsistent",
                     oldKeyVersionId);
             return;
         }
 
-        log.info("Rotation drain starting: re-encrypting tokens from old key [{}] → new key [{}]",
+        log.info("Rotation drain starting: re-encrypting tokens from old DEK [{}] → new DEK [{}]",
                 oldKeyVersionId, newKeyVersionId);
 
         int batchSize = rotationProperties.getBatch().getSize();
@@ -83,10 +83,10 @@ public class RotationJob {
 
         long remaining = tokenVaultRepository.countActiveByKeyVersionId(oldKeyVersionId);
         if (remaining == 0) {
-            log.info("All tokens migrated from key [{}] — initiating cutover", oldKeyVersionId);
+            log.info("All tokens migrated from DEK [{}] — initiating cutover", oldKeyVersionId);
             completeRotation(rotatingKey);
         } else {
-            log.info("Rotation in progress: {} token(s) remaining on old key [{}]", remaining, oldKeyVersionId);
+            log.info("Rotation in progress: {} token(s) remaining on old DEK [{}]", remaining, oldKeyVersionId);
         }
     }
 
@@ -96,7 +96,7 @@ public class RotationJob {
 
         while (true) {
             if (Thread.currentThread().isInterrupted()) {
-                log.warn("Rotation drain interrupted after {} batch(es) on key [{}] — " +
+                log.warn("Rotation drain interrupted after {} batch(es) on DEK [{}] — " +
                         "will resume on next cron tick", batchNum, oldKeyVersionId);
                 return;
             }
@@ -111,7 +111,7 @@ public class RotationJob {
             }
 
             if (result.totalFetched() == 0) {
-                log.info("Rotation drain complete after {} batch(es) — no records remain on key [{}]",
+                log.info("Rotation drain complete after {} batch(es) — no records remain on DEK [{}]",
                         batchNum, oldKeyVersionId);
                 break;
             }
@@ -130,7 +130,7 @@ public class RotationJob {
 
         long remainingDoubleCheck = tokenVaultRepository.countActiveByKeyVersionId(oldKeyVersionId);
         if (remainingDoubleCheck > 0) {
-            log.warn("Premature cutover prevented: {} token(s) still on key [{}] — continuing batch",
+            log.warn("Premature cutover prevented: {} token(s) still on DEK [{}] — continuing batch",
                     remainingDoubleCheck, oldKeyVersionId);
             return;
         }
@@ -138,7 +138,7 @@ public class RotationJob {
         rotatingKey.markRetired(Instant.now());
         keyVersionRepository.save(rotatingKey);
 
-        keyRing.retire(oldKeyVersionId.toString());
+        dekRing.retire(oldKeyVersionId.toString());
 
         auditLogger.logKeyEvent(
                 AuditEventType.KEY_ROTATION_COMPLETED,
@@ -147,6 +147,6 @@ public class RotationJob {
                 null,
                 null);
 
-        log.info("Key rotation complete: key [{}] retired successfully", oldKeyVersionId);
+        log.info("DEK rotation complete: key [{}] retired successfully", oldKeyVersionId);
     }
 }

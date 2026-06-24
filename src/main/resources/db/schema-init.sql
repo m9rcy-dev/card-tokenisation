@@ -3,7 +3,7 @@
 --
 -- Consolidated DDL for the card-tokenisation-system database.
 -- This is the final schema state equivalent to running all Flyway migrations
--- V1 through V12 in sequence.
+-- V1 through V14 in sequence.
 --
 -- Use this file when you need a single portable init script, for example:
 --   - PostgreSQL initdb / Docker entrypoint (POSTGRES_INITDB_SCRIPTS)
@@ -26,26 +26,27 @@
 -- Table: key_versions
 --
 -- Unified table for all key material metadata.
--- key_type = 'KEK' rows hold an envelope key encrypted by AWS KMS.
+-- key_type = 'DEK' rows hold a shared Data Encryption Key generated and
+--            protected by AWS KMS (via GenerateDataKey / Decrypt).
 -- key_type = 'HMAC' rows hold an HMAC secret encrypted directly by AWS KMS CMK
---            (purpose=hmac-key encryption context) — not wrapped under the KEK.
+--            (purpose=hmac-key encryption context).
 --
--- KEK rows:  kms_key_id, kms_provider, encrypted_kek_blob populated
+-- DEK rows:  kms_key_id, kms_provider, encrypted_dek_blob populated
 --            encrypted_secret NULL
 -- HMAC rows: kms_key_id, kms_provider, encrypted_secret populated
---            encrypted_kek_blob NULL
+--            encrypted_dek_blob NULL
 --
 -- Both row types populate kms_key_id and kms_provider — they both use the
 -- same CMK, with distinct encryption contexts to prevent cross-use.
 -- ---------------------------------------------------------------------------
 CREATE TABLE key_versions (
     id                 UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-    kms_key_id         VARCHAR(255),                    -- ARN or alias; populated for both KEK and HMAC rows
+    kms_key_id         VARCHAR(255),                    -- ARN or alias; populated for both DEK and HMAC rows
     kms_provider       VARCHAR(50),                     -- 'AWS_KMS' | 'LOCAL_DEV'; populated for both row types
     key_alias          VARCHAR(100)  NOT NULL,
-    encrypted_kek_blob TEXT,                            -- Base64(KMS.Encrypt(kek_bytes, ctx=kek-unwrap)); NULL for HMAC rows
-    key_type           VARCHAR(10)   NOT NULL DEFAULT 'KEK'
-                           CHECK (key_type IN ('KEK', 'HMAC')),
+    encrypted_dek_blob BYTEA,                           -- KMS-encrypted DEK blob (raw bytes from GenerateDataKey); NULL for HMAC rows
+    key_type           VARCHAR(10)   NOT NULL DEFAULT 'DEK'
+                           CHECK (key_type IN ('DEK', 'HMAC')),
     status             VARCHAR(20)   NOT NULL DEFAULT 'ACTIVE'
                            CHECK (status IN ('ACTIVE', 'ROTATING', 'RETIRED', 'COMPROMISED')),
     rotation_reason    VARCHAR(20)
@@ -57,10 +58,10 @@ CREATE TABLE key_versions (
     created_by         VARCHAR(100)  NOT NULL,
 
     -- HMAC-only columns
-    encrypted_secret   BYTEA                            -- KMS.Encrypt(hmac_bytes, ctx=hmac-key); NULL for KEK rows
+    encrypted_secret   BYTEA                            -- KMS.Encrypt(hmac_bytes, ctx=hmac-key); NULL for DEK rows
 );
 
--- One ACTIVE row per key_type — prevents two concurrent ACTIVE KEKs or two ACTIVE HMACs
+-- One ACTIVE row per key_type — prevents two concurrent ACTIVE DEKs or two ACTIVE HMACs
 CREATE UNIQUE INDEX idx_key_versions_single_active_per_type
     ON key_versions(key_type) WHERE status = 'ACTIVE';
 
@@ -72,16 +73,17 @@ CREATE INDEX idx_key_versions_hmac_status
 -- Table: token_vault
 --
 -- One row per issued token.  PAN is never stored in cleartext.
--- Envelope encryption: PAN → DEK (per-record AES-256-GCM) → KEK (in-memory) → KMS.
+-- Encryption: PAN encrypted directly with the active shared DEK (AES-256-GCM).
+-- No per-record DEK is stored — the shared DEK lives in InMemoryDekKeyRing,
+-- keyed by key_version_id → key_versions.encrypted_dek_blob (KMS-protected).
 -- pan_hash enables deterministic deduplication without storing the PAN.
 -- ---------------------------------------------------------------------------
 CREATE TABLE token_vault (
     token_id            UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
     token               VARCHAR(36)   NOT NULL UNIQUE,  -- surrogate UUID token value
     encrypted_pan       BYTEA         NOT NULL,         -- AES-256-GCM ciphertext of PAN
-    iv                  BYTEA         NOT NULL,         -- 12-byte GCM IV, unique per row
+    iv                  BYTEA         NOT NULL,         -- 12-byte GCM IV, unique per row (MUST be fresh per encrypt)
     auth_tag            BYTEA         NOT NULL,         -- 16-byte GCM authentication tag
-    encrypted_dek       BYTEA         NOT NULL,         -- 32-byte DEK wrapped by the active KEK (AES-GCM)
     key_version_id      UUID          NOT NULL REFERENCES key_versions(id),
     pan_hash            VARCHAR(64)   NOT NULL,         -- HMAC-SHA256(pan, hmac_secret) for dedup
     hmac_key_version_id UUID          REFERENCES key_versions(id),  -- which HMAC version produced pan_hash
@@ -108,7 +110,7 @@ CREATE UNIQUE INDEX idx_token_vault_token
 CREATE UNIQUE INDEX idx_token_vault_pan_hash_active
     ON token_vault(pan_hash) WHERE is_active = TRUE;
 
--- KEK rotation batch: find active tokens still on the rotating key version
+-- DEK rotation batch: find active tokens still on the rotating key version
 CREATE INDEX idx_token_vault_key_version_active
     ON token_vault(key_version_id) WHERE is_active = TRUE;
 
@@ -118,7 +120,7 @@ CREATE INDEX idx_token_vault_key_version_active
 --   CREATE INDEX CONCURRENTLY idx_token_vault_hmac_version_active
 --       ON token_vault(hmac_key_version_id) WHERE is_active = TRUE;
 --
--- Keeping it absent avoids ~20% extra WAL write volume during KEK rotation batches
+-- Keeping it absent avoids ~20% extra WAL write volume during DEK rotation batches
 -- (every rotation UPDATE forces index maintenance even though hmac_key_version_id is unchanged).
 
 -- ---------------------------------------------------------------------------

@@ -48,12 +48,12 @@ class DetokenisationServiceTest {
     private static final String TOKEN_VALUE = "some-opaque-token-uuid";
     private static final String PAN = "4111111111111111";
     private static final byte[] PAN_BYTES = PAN.getBytes(StandardCharsets.UTF_8);
-    private static final byte[] DUMMY_KEK = new byte[32];
+    private static final byte[] DUMMY_DEK = new byte[32];
     private static final UUID KEY_VERSION_UUID = UUID.randomUUID();
     private static final String KEY_VERSION_ID = KEY_VERSION_UUID.toString();
 
     @Mock private AesGcmCipher cipher;
-    @Mock private InMemoryKekKeyRing keyRing;
+    @Mock private InMemoryDekKeyRing dekRing;
     @Mock private TokenVaultRepository tokenVaultRepository;
     @Mock private AuditLogger auditLogger;
 
@@ -61,7 +61,7 @@ class DetokenisationServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new DetokenisationService(cipher, keyRing, tokenVaultRepository, auditLogger);
+        service = new DetokenisationService(cipher, dekRing, tokenVaultRepository, auditLogger);
     }
 
     // ── Happy path ────────────────────────────────────────────────────────────
@@ -71,8 +71,8 @@ class DetokenisationServiceTest {
         TokenVault vault = buildVault(Instant.now().plusSeconds(3600));
         KeyMaterial keyMaterial = buildKeyMaterial(KeyStatus.ACTIVE);
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
-        when(cipher.decrypt(any(), any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
 
         DetokeniseResponse response = service.detokenise(TOKEN_VALUE);
 
@@ -84,8 +84,8 @@ class DetokenisationServiceTest {
         TokenVault vault = buildVault(Instant.now().plusSeconds(3600));
         KeyMaterial keyMaterial = buildKeyMaterial(KeyStatus.ACTIVE);
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
-        when(cipher.decrypt(any(), any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
 
         DetokeniseResponse response = service.detokenise(TOKEN_VALUE);
 
@@ -100,8 +100,8 @@ class DetokenisationServiceTest {
         TokenVault vault = buildVault(Instant.now().plusSeconds(3600));
         KeyMaterial keyMaterial = buildKeyMaterial(KeyStatus.ACTIVE);
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
-        when(cipher.decrypt(any(), any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
 
         service.detokenise(TOKEN_VALUE);
 
@@ -115,8 +115,8 @@ class DetokenisationServiceTest {
         TokenVault vault = buildVault(null);
         KeyMaterial keyMaterial = buildKeyMaterial(KeyStatus.ACTIVE);
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
-        when(cipher.decrypt(any(), any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
 
         assertThat(service.detokenise(TOKEN_VALUE).getPan()).isEqualTo(PAN);
     }
@@ -126,8 +126,8 @@ class DetokenisationServiceTest {
         TokenVault vault = buildVault(Instant.now().plusSeconds(3600));
         KeyMaterial rotatingMaterial = buildKeyMaterial(KeyStatus.ROTATING);
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(rotatingMaterial);
-        when(cipher.decrypt(any(), any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(rotatingMaterial);
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
 
         assertThat(service.detokenise(TOKEN_VALUE).getPan()).isEqualTo(PAN);
     }
@@ -163,7 +163,7 @@ class DetokenisationServiceTest {
         assertThatThrownBy(() -> service.detokenise(TOKEN_VALUE))
                 .isInstanceOf(TokenNotFoundException.class);
 
-        verify(cipher, never()).decrypt(any(), any(), any(), any(), any());
+        verify(cipher, never()).decrypt(any(), any(), any(), any());
     }
 
     // ── Compromised key ──────────────────────────────────────────────────────
@@ -173,7 +173,7 @@ class DetokenisationServiceTest {
         TokenVault vault = buildVault(Instant.now().plusSeconds(3600));
         KeyMaterial compromisedMaterial = buildKeyMaterial(KeyStatus.COMPROMISED);
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(compromisedMaterial);
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(compromisedMaterial);
 
         assertThatThrownBy(() -> service.detokenise(TOKEN_VALUE))
                 .isInstanceOf(KeyIntegrityException.class)
@@ -185,7 +185,7 @@ class DetokenisationServiceTest {
         TokenVault vault = buildVault(Instant.now().plusSeconds(3600));
         KeyMaterial compromisedMaterial = buildKeyMaterial(KeyStatus.COMPROMISED);
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(compromisedMaterial);
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(compromisedMaterial);
 
         assertThatThrownBy(() -> service.detokenise(TOKEN_VALUE))
                 .isInstanceOf(KeyIntegrityException.class);
@@ -200,12 +200,12 @@ class DetokenisationServiceTest {
         TokenVault vault = buildVault(Instant.now().plusSeconds(3600));
         KeyMaterial compromisedMaterial = buildKeyMaterial(KeyStatus.COMPROMISED);
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(compromisedMaterial);
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(compromisedMaterial);
 
         assertThatThrownBy(() -> service.detokenise(TOKEN_VALUE))
                 .isInstanceOf(KeyIntegrityException.class);
 
-        verify(cipher, never()).decrypt(any(), any(), any(), any(), any());
+        verify(cipher, never()).decrypt(any(), any(), any(), any());
     }
 
     // ── Tampered ciphertext (GCM auth tag failure) ────────────────────────────
@@ -217,8 +217,8 @@ class DetokenisationServiceTest {
         EncryptionException tamperException =
                 new EncryptionException("GCM authentication tag verification failed", new AEADBadTagException());
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
-        when(cipher.decrypt(any(), any(), any(), any(), any())).thenThrow(tamperException);
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
+        when(cipher.decrypt(any(), any(), any(), any())).thenThrow(tamperException);
 
         assertThatThrownBy(() -> service.detokenise(TOKEN_VALUE))
                 .isInstanceOf(KeyIntegrityException.class)
@@ -232,8 +232,8 @@ class DetokenisationServiceTest {
         EncryptionException tamperException =
                 new EncryptionException("GCM authentication tag verification failed", new AEADBadTagException());
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
-        when(cipher.decrypt(any(), any(), any(), any(), any())).thenThrow(tamperException);
+        when(dekRing.getByVersion(KEY_VERSION_ID)).thenReturn(keyMaterial);
+        when(cipher.decrypt(any(), any(), any(), any())).thenThrow(tamperException);
 
         assertThatThrownBy(() -> service.detokenise(TOKEN_VALUE))
                 .isInstanceOf(KeyIntegrityException.class);
@@ -249,7 +249,7 @@ class DetokenisationServiceTest {
     void detokenise_keyVersionNotInRing_throwsKeyVersionNotFoundException() {
         TokenVault vault = buildVault(Instant.now().plusSeconds(3600));
         when(tokenVaultRepository.findActiveByToken(TOKEN_VALUE)).thenReturn(Optional.of(vault));
-        when(keyRing.getByVersion(KEY_VERSION_ID))
+        when(dekRing.getByVersion(KEY_VERSION_ID))
                 .thenThrow(new KeyVersionNotFoundException(KEY_VERSION_ID));
 
         assertThatThrownBy(() -> service.detokenise(TOKEN_VALUE))
@@ -258,10 +258,6 @@ class DetokenisationServiceTest {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /**
-     * Builds a {@link TokenVault} stub with the given expiry.
-     * Pass {@code null} for no expiry; pass a past instant to test expiry enforcement.
-     */
     private TokenVault buildVault(Instant expiresAt) {
         KeyVersion keyVersion = buildKeyVersion();
         return TokenVault.builder()
@@ -269,7 +265,6 @@ class DetokenisationServiceTest {
                 .encryptedPan(new byte[]{1, 2, 3})
                 .iv(new byte[12])
                 .authTag(new byte[16])
-                .encryptedDek(new byte[60])
                 .keyVersion(keyVersion)
                 .panHash("hash")
                 .lastFour("1111")
@@ -281,15 +276,12 @@ class DetokenisationServiceTest {
                 .build();
     }
 
-    /**
-     * Builds a {@link KeyVersion} stub with the fixed {@link #KEY_VERSION_UUID}.
-     */
     private KeyVersion buildKeyVersion() {
         KeyVersion keyVersion = KeyVersion.builder()
                 .kmsKeyId("test-key-id")
                 .kmsProvider("LOCAL_DEV")
                 .keyAlias("test-key")
-                .encryptedKekBlob("ignored")
+                .encryptedDekBlob(new byte[60])
                 .status(KeyStatus.ACTIVE)
                 .rotateBy(Instant.now().plusSeconds(86400))
                 .activatedAt(Instant.now().minusSeconds(3600))
@@ -305,11 +297,8 @@ class DetokenisationServiceTest {
         return keyVersion;
     }
 
-    /**
-     * Builds a {@link KeyMaterial} with the given lifecycle status.
-     */
     private KeyMaterial buildKeyMaterial(KeyStatus status) {
-        KeyMaterial base = new KeyMaterial(KEY_VERSION_ID, DUMMY_KEK, Instant.now().plusSeconds(86400));
+        KeyMaterial base = new KeyMaterial(KEY_VERSION_ID, DUMMY_DEK, Instant.now().plusSeconds(86400));
         return switch (status) {
             case ACTIVE, ROTATING -> base;
             case COMPROMISED -> base.asCompromised();

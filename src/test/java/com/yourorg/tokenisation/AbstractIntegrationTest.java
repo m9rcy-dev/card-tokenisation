@@ -1,5 +1,7 @@
 package com.yourorg.tokenisation;
 
+import com.yourorg.tokenisation.kms.DataKey;
+import com.yourorg.tokenisation.kms.KmsProvider;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -15,6 +17,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Arrays;
 
 /**
  * Base class for all functional integration tests.
@@ -37,7 +40,7 @@ import java.time.Instant;
  * tests can trigger the job explicitly and deterministically.
  *
  * <p>A {@link TestDataSeederConfig} provides a high-priority {@link ApplicationRunner}
- * that inserts a fixed-UUID ACTIVE key version ({@link #SEED_KEY_VERSION_ID}) before
+ * that inserts a fixed-UUID ACTIVE DEK key version ({@link #SEED_KEY_VERSION_ID}) before
  * {@code KeyRingInitialiser.run()} executes. This ensures the key ring can always
  * initialise successfully at test context startup, regardless of the order in which
  * test classes run or what state a previous test class left in the shared container.
@@ -60,7 +63,7 @@ import java.time.Instant;
 public abstract class AbstractIntegrationTest {
 
     /**
-     * Fixed UUID for the seed ACTIVE key version inserted by {@link TestDataSeederConfig}.
+     * Fixed UUID for the seed ACTIVE DEK key version inserted by {@link TestDataSeederConfig}.
      *
      * <p>Tests that need to reference the seed key version (e.g. to restore it after
      * cleanup or to verify a vault record's key version) should use this constant.
@@ -111,7 +114,7 @@ public abstract class AbstractIntegrationTest {
      * Test configuration that provides a database seeder bean.
      *
      * <p>The seeder runs at application startup (with highest precedence, before
-     * {@code KeyRingInitialiser}) and ensures the seed ACTIVE key version is present
+     * {@code KeyRingInitialiser}) and ensures the seed ACTIVE DEK key version is present
      * in {@code key_versions}. Uses {@code ON CONFLICT DO NOTHING} so it is safe to
      * call multiple times without causing duplicate-key errors.
      */
@@ -119,23 +122,32 @@ public abstract class AbstractIntegrationTest {
     static class TestDataSeederConfig {
 
         /**
-         * Inserts the seed ACTIVE key version ({@link #SEED_KEY_VERSION_ID}) into
+         * Inserts the seed ACTIVE DEK key version ({@link #SEED_KEY_VERSION_ID}) into
          * {@code key_versions} before {@code KeyRingInitialiser.run()} executes.
+         *
+         * <p>Calls {@link KmsProvider#generateDataKey()} to produce a real AES-GCM encrypted
+         * DEK blob so that {@code LocalDevKmsAdapter.decryptDataKey()} can successfully decrypt
+         * it during ring initialisation.
          *
          * <p>Runs with {@code @Order(Ordered.HIGHEST_PRECEDENCE)} to guarantee it
          * precedes the standard {@code KeyRingInitialiser} {@code ApplicationRunner}.
          *
          * @param jdbcTemplate used to execute the seed insertion; must not be null
+         * @param kmsProvider  used to generate the encrypted DEK blob; must not be null
          * @return the seeder {@link ApplicationRunner}
          */
         @Bean
         @Order(Ordered.HIGHEST_PRECEDENCE)
-        public ApplicationRunner testKeyVersionSeeder(JdbcTemplate jdbcTemplate) {
+        public ApplicationRunner testKeyVersionSeeder(JdbcTemplate jdbcTemplate, KmsProvider kmsProvider) {
             return args -> {
+                DataKey dataKey = kmsProvider.generateDataKey();
+                byte[] encryptedDekBlob = dataKey.encryptedDekBlob();
+                Arrays.fill(dataKey.plaintextDek(), (byte) 0);
+
                 Timestamp rotateBy = Timestamp.from(Instant.now().plusSeconds(365L * 24 * 60 * 60));
                 jdbcTemplate.update("""
                         INSERT INTO key_versions (id, kms_key_id, kms_provider, key_alias,
-                            encrypted_kek_blob, key_type, status, activated_at, rotate_by, created_by)
+                            encrypted_dek_blob, key_type, status, activated_at, rotate_by, created_by)
                         VALUES (?::uuid, ?, ?, ?, ?, ?, ?, now(), ?, ?)
                         ON CONFLICT (id) DO NOTHING
                         """,
@@ -143,8 +155,8 @@ public abstract class AbstractIntegrationTest {
                         "local-dev-key",
                         "LOCAL_DEV",
                         "integration-test-seed-key",
-                        "ignored",
-                        "KEK",
+                        encryptedDekBlob,
+                        "DEK",
                         "ACTIVE",
                         rotateBy,
                         "test-seeder"

@@ -1,7 +1,7 @@
 package com.yourorg.tokenisation.monitoring;
 
 import com.yourorg.tokenisation.api.response.HealthResponse;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,21 +35,14 @@ public class HealthService {
 
     private final JdbcTemplate jdbcTemplate;
     private final KeyVersionRepository keyVersionRepository;
-    private final InMemoryKekKeyRing keyRing;
+    private final InMemoryDekKeyRing dekRing;
 
-    /**
-     * Constructs the health service with its required dependencies.
-     *
-     * @param jdbcTemplate         used for the database liveness check; must not be null
-     * @param keyVersionRepository used to verify an active key version exists; must not be null
-     * @param keyRing              used to verify the in-memory ring is loaded and active; must not be null
-     */
     public HealthService(JdbcTemplate jdbcTemplate,
                          KeyVersionRepository keyVersionRepository,
-                         InMemoryKekKeyRing keyRing) {
+                         InMemoryDekKeyRing dekRing) {
         this.jdbcTemplate = jdbcTemplate;
         this.keyVersionRepository = keyVersionRepository;
-        this.keyRing = keyRing;
+        this.dekRing = dekRing;
     }
 
     /**
@@ -84,15 +77,11 @@ public class HealthService {
 
     private String checkKeyRing() {
         try {
-            // Verify both that the database has an ACTIVE key and that the in-memory ring
-            // has successfully loaded and promoted it. A ring that failed to initialise
-            // at startup will throw IllegalStateException from getActive(), which we treat
-            // as DOWN — preventing a healthy DB check from masking an unusable key ring.
-            if (keyVersionRepository.findActiveKek().isEmpty()) {
-                log.error("Key ring health check failed: no ACTIVE key version in database");
+            if (keyVersionRepository.findActiveDek().isEmpty()) {
+                log.error("Key ring health check failed: no ACTIVE DEK version in database");
                 return STATUS_DOWN;
             }
-            keyRing.getActive(); // throws IllegalStateException if ring is not initialised
+            dekRing.getActive(); // throws IllegalStateException if ring is not initialised
             return STATUS_UP;
         } catch (Exception e) {
             log.error("Key ring health check failed: {}", e.getMessage());

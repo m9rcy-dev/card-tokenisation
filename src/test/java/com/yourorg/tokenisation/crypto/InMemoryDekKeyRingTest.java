@@ -16,58 +16,58 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for {@link InMemoryKekKeyRing}.
+ * Unit tests for {@link InMemoryDekKeyRing}.
  *
  * <p>No Spring context. Tests cover: load, promote, get-by-version, retire,
  * mark-compromised, and concurrent load correctness.
  */
-class InMemoryKekKeyRingTest {
+class InMemoryDekKeyRingTest {
 
     private static final String KEY_VERSION_1 = "version-1-uuid";
     private static final String KEY_VERSION_2 = "version-2-uuid";
-    private static final byte[] VALID_KEK = new byte[32];
+    private static final byte[] VALID_DEK = new byte[32];
     private static final Instant EXPIRES_AT = Instant.now().plusSeconds(86400);
 
     static {
-        Arrays.fill(VALID_KEK, (byte) 0xAA);
+        Arrays.fill(VALID_DEK, (byte) 0xAA);
     }
 
-    private InMemoryKekKeyRing keyRing;
+    private InMemoryDekKeyRing dekRing;
 
     @BeforeEach
     void setUp() {
-        keyRing = new InMemoryKekKeyRing();
+        dekRing = new InMemoryDekKeyRing();
     }
 
     // ── load ─────────────────────────────────────────────────────────────────
 
     @Test
     void load_validKeyMaterial_keepsVersionInRing() {
-        keyRing.load(KEY_VERSION_1, VALID_KEK.clone(), EXPIRES_AT);
+        dekRing.load(KEY_VERSION_1, VALID_DEK.clone(), EXPIRES_AT);
 
-        assertThat(keyRing.contains(KEY_VERSION_1)).isTrue();
+        assertThat(dekRing.contains(KEY_VERSION_1)).isTrue();
     }
 
     @Test
     void load_sameVersionTwice_replacesExistingEntry() {
-        keyRing.load(KEY_VERSION_1, VALID_KEK.clone(), EXPIRES_AT);
-        byte[] updatedKek = new byte[32];
-        Arrays.fill(updatedKek, (byte) 0xBB);
-        keyRing.load(KEY_VERSION_1, updatedKek.clone(), EXPIRES_AT.plusSeconds(3600));
+        dekRing.load(KEY_VERSION_1, VALID_DEK.clone(), EXPIRES_AT);
+        byte[] updatedDek = new byte[32];
+        Arrays.fill(updatedDek, (byte) 0xBB);
+        dekRing.load(KEY_VERSION_1, updatedDek.clone(), EXPIRES_AT.plusSeconds(3600));
 
-        keyRing.promoteActive(KEY_VERSION_1);
-        byte[] returnedKek = keyRing.getActive().copyKek();
-        assertThat(returnedKek).isEqualTo(updatedKek);
+        dekRing.promoteActive(KEY_VERSION_1);
+        byte[] returnedDek = dekRing.getActive().copyDek();
+        assertThat(returnedDek).isEqualTo(updatedDek);
     }
 
     // ── promoteActive ────────────────────────────────────────────────────────
 
     @Test
     void promoteActive_loadedVersion_getActiveReturnsCorrectMaterial() {
-        keyRing.load(KEY_VERSION_1, VALID_KEK.clone(), EXPIRES_AT);
-        keyRing.promoteActive(KEY_VERSION_1);
+        dekRing.load(KEY_VERSION_1, VALID_DEK.clone(), EXPIRES_AT);
+        dekRing.promoteActive(KEY_VERSION_1);
 
-        KeyMaterial activeMaterial = keyRing.getActive();
+        KeyMaterial activeMaterial = dekRing.getActive();
 
         assertThat(activeMaterial).isNotNull();
         assertThat(activeMaterial.keyVersionId()).isEqualTo(KEY_VERSION_1);
@@ -75,22 +75,22 @@ class InMemoryKekKeyRingTest {
 
     @Test
     void promoteActive_notLoadedVersion_throwsIllegalState() {
-        assertThatThrownBy(() -> keyRing.promoteActive("nonexistent-version"))
+        assertThatThrownBy(() -> dekRing.promoteActive("nonexistent-version"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("not loaded");
     }
 
     @Test
     void promoteActive_version2AfterVersion1_getActiveReturnsVersion2() {
-        keyRing.load(KEY_VERSION_1, VALID_KEK.clone(), EXPIRES_AT);
-        byte[] kek2 = new byte[32];
-        Arrays.fill(kek2, (byte) 0xBB);
-        keyRing.load(KEY_VERSION_2, kek2.clone(), EXPIRES_AT);
+        dekRing.load(KEY_VERSION_1, VALID_DEK.clone(), EXPIRES_AT);
+        byte[] dek2 = new byte[32];
+        Arrays.fill(dek2, (byte) 0xBB);
+        dekRing.load(KEY_VERSION_2, dek2.clone(), EXPIRES_AT);
 
-        keyRing.promoteActive(KEY_VERSION_1);
-        keyRing.promoteActive(KEY_VERSION_2);
+        dekRing.promoteActive(KEY_VERSION_1);
+        dekRing.promoteActive(KEY_VERSION_2);
 
-        KeyMaterial activeMaterial = keyRing.getActive();
+        KeyMaterial activeMaterial = dekRing.getActive();
         assertThat(activeMaterial.keyVersionId()).isEqualTo(KEY_VERSION_2);
     }
 
@@ -98,20 +98,19 @@ class InMemoryKekKeyRingTest {
 
     @Test
     void getActive_noVersionPromoted_throwsIllegalState() {
-        assertThatThrownBy(() -> keyRing.getActive())
+        assertThatThrownBy(() -> dekRing.getActive())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("No active key version");
+                .hasMessageContaining("No active DEK version");
     }
 
     @Test
-    void getActive_returnsCopyOfKek_notDirectReference() {
-        keyRing.load(KEY_VERSION_1, VALID_KEK.clone(), EXPIRES_AT);
-        keyRing.promoteActive(KEY_VERSION_1);
+    void getActive_returnsCopyOfDek_notDirectReference() {
+        dekRing.load(KEY_VERSION_1, VALID_DEK.clone(), EXPIRES_AT);
+        dekRing.promoteActive(KEY_VERSION_1);
 
-        byte[] firstCopy = keyRing.getActive().copyKek();
-        byte[] secondCopy = keyRing.getActive().copyKek();
+        byte[] firstCopy = dekRing.getActive().copyDek();
+        byte[] secondCopy = dekRing.getActive().copyDek();
 
-        // Modifying the first copy must not affect the second
         firstCopy[0] = (byte) 0xFF;
         assertThat(secondCopy[0]).isNotEqualTo((byte) 0xFF);
     }
@@ -120,9 +119,9 @@ class InMemoryKekKeyRingTest {
 
     @Test
     void getByVersion_loadedVersion_returnsMaterial() {
-        keyRing.load(KEY_VERSION_1, VALID_KEK.clone(), EXPIRES_AT);
+        dekRing.load(KEY_VERSION_1, VALID_DEK.clone(), EXPIRES_AT);
 
-        KeyMaterial material = keyRing.getByVersion(KEY_VERSION_1);
+        KeyMaterial material = dekRing.getByVersion(KEY_VERSION_1);
 
         assertThat(material).isNotNull();
         assertThat(material.keyVersionId()).isEqualTo(KEY_VERSION_1);
@@ -130,17 +129,16 @@ class InMemoryKekKeyRingTest {
 
     @Test
     void getByVersion_retiredVersion_remainsAccessible() {
-        keyRing.load(KEY_VERSION_1, VALID_KEK.clone(), EXPIRES_AT);
-        keyRing.retire(KEY_VERSION_1);
+        dekRing.load(KEY_VERSION_1, VALID_DEK.clone(), EXPIRES_AT);
+        dekRing.retire(KEY_VERSION_1);
 
-        // Retired versions must stay in ring for detokenisation of pre-rotation tokens
-        KeyMaterial retiredMaterial = keyRing.getByVersion(KEY_VERSION_1);
+        KeyMaterial retiredMaterial = dekRing.getByVersion(KEY_VERSION_1);
         assertThat(retiredMaterial.status()).isEqualTo(KeyStatus.RETIRED);
     }
 
     @Test
     void getByVersion_nonExistentVersion_throwsKeyVersionNotFoundException() {
-        assertThatThrownBy(() -> keyRing.getByVersion("nonexistent-version"))
+        assertThatThrownBy(() -> dekRing.getByVersion("nonexistent-version"))
                 .isInstanceOf(KeyVersionNotFoundException.class)
                 .hasMessageContaining("nonexistent-version");
     }
@@ -149,33 +147,31 @@ class InMemoryKekKeyRingTest {
 
     @Test
     void retire_activeVersion_setsStatusToRetiredButKeepsInRing() {
-        keyRing.load(KEY_VERSION_1, VALID_KEK.clone(), EXPIRES_AT);
-        keyRing.retire(KEY_VERSION_1);
+        dekRing.load(KEY_VERSION_1, VALID_DEK.clone(), EXPIRES_AT);
+        dekRing.retire(KEY_VERSION_1);
 
-        assertThat(keyRing.contains(KEY_VERSION_1)).isTrue();
-        assertThat(keyRing.getByVersion(KEY_VERSION_1).status()).isEqualTo(KeyStatus.RETIRED);
+        assertThat(dekRing.contains(KEY_VERSION_1)).isTrue();
+        assertThat(dekRing.getByVersion(KEY_VERSION_1).status()).isEqualTo(KeyStatus.RETIRED);
     }
 
     @Test
     void retire_nonExistentVersion_isIdempotentAndDoesNotThrow() {
-        // retire on a missing version must not throw — it's a no-op
-        keyRing.retire("version-that-was-never-loaded");
-        // Passes if no exception is thrown
+        dekRing.retire("version-that-was-never-loaded");
     }
 
     // ── markCompromised ──────────────────────────────────────────────────────
 
     @Test
     void markCompromised_loadedVersion_setsStatusToCompromised() {
-        keyRing.load(KEY_VERSION_1, VALID_KEK.clone(), EXPIRES_AT);
-        keyRing.markCompromised(KEY_VERSION_1);
+        dekRing.load(KEY_VERSION_1, VALID_DEK.clone(), EXPIRES_AT);
+        dekRing.markCompromised(KEY_VERSION_1);
 
-        assertThat(keyRing.getByVersion(KEY_VERSION_1).status()).isEqualTo(KeyStatus.COMPROMISED);
+        assertThat(dekRing.getByVersion(KEY_VERSION_1).status()).isEqualTo(KeyStatus.COMPROMISED);
     }
 
     @Test
     void markCompromised_notInRing_throwsIllegalState() {
-        assertThatThrownBy(() -> keyRing.markCompromised("not-in-ring"))
+        assertThatThrownBy(() -> dekRing.markCompromised("not-in-ring"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("not in ring");
     }
@@ -199,8 +195,8 @@ class InMemoryKekKeyRingTest {
             executor.submit(() -> {
                 try {
                     startLatch.await();
-                    byte[] kek = new byte[32];
-                    keyRing.load(versionId, kek, EXPIRES_AT);
+                    byte[] dek = new byte[32];
+                    dekRing.load(versionId, dek, EXPIRES_AT);
                 } catch (InterruptedException interruptedException) {
                     Thread.currentThread().interrupt();
                 } finally {
@@ -214,7 +210,7 @@ class InMemoryKekKeyRingTest {
         executor.shutdown();
 
         for (String versionId : versionIds) {
-            assertThat(keyRing.contains(versionId))
+            assertThat(dekRing.contains(versionId))
                     .as("Version %s must be in ring after concurrent load", versionId)
                     .isTrue();
         }

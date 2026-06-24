@@ -4,7 +4,8 @@ import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
+import com.yourorg.tokenisation.crypto.EncryptResult;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
@@ -36,7 +37,7 @@ import static org.mockito.Mockito.*;
  *
  * <p>Tests verify:
  * <ul>
- *   <li>Happy path: token DEK is re-wrapped and vault is saved
+ *   <li>Happy path: PAN is decrypted with old DEK, re-encrypted with new DEK, vault is saved
  *   <li>Happy path: TOKEN_REENCRYPTED audit event written per token
  *   <li>Happy path: batch result counts are correct
  *   <li>Empty batch: no cipher calls, zero counts returned
@@ -52,29 +53,27 @@ class RotationBatchProcessorTest {
     private static final UUID TOKEN_ID_1 = UUID.fromString("33333333-0000-0000-0000-000000000001");
     private static final UUID TOKEN_ID_2 = UUID.fromString("33333333-0000-0000-0000-000000000002");
 
-    // 32-byte (256-bit) KEKs used by KeyMaterial — content is arbitrary for unit tests
-    private static final byte[] OLD_KEK = new byte[32];
-    private static final byte[] NEW_KEK = new byte[32];
+    private static final byte[] OLD_DEK = new byte[32];
+    private static final byte[] NEW_DEK = new byte[32];
 
     @Mock private TokenVaultRepository tokenVaultRepository;
     @Mock private KeyVersionRepository keyVersionRepository;
     @Mock private AesGcmCipher cipher;
-    @Mock private InMemoryKekKeyRing keyRing;
+    @Mock private InMemoryDekKeyRing dekRing;
     @Mock private AuditLogger auditLogger;
 
     private RotationBatchProcessor processor;
 
     @BeforeEach
     void setUp() {
-        // parallelism=1 keeps unit tests deterministic (sequential execution, no thread-ordering surprises)
         RotationProperties rotationProperties = new RotationProperties();
         rotationProperties.getBatch().setParallelism(1);
 
         processor = new RotationBatchProcessor(
-                tokenVaultRepository, keyVersionRepository, cipher, keyRing, auditLogger,
+                tokenVaultRepository, keyVersionRepository, cipher, dekRing, auditLogger,
                 rotationProperties);
-        // In unit tests there is no Spring proxy, so set self to the processor itself.
-        // Transactions are not under test here — integration tests verify transactional behaviour.
+        // No Spring proxy in unit tests — self must point to the instance directly.
+        // Transactions are not under test here; integration tests verify transactional behaviour.
         processor.self = processor;
     }
 
@@ -92,19 +91,19 @@ class RotationBatchProcessorTest {
         assertThat(result.processedCount()).isZero();
         assertThat(result.failedCount()).isZero();
         assertThat(result.totalFetched()).isZero();
-        verify(cipher, never()).unwrapDek(any(), any());
-        verify(cipher, never()).wrapDek(any(), any());
+        verify(cipher, never()).decrypt(any(), any(), any(), any());
+        verify(cipher, never()).encrypt(any(), any());
     }
 
     // ── Happy path ────────────────────────────────────────────────────────────
 
     @Test
-    void processBatch_singleToken_rewrapsAndSavesVault() {
+    void processBatch_singleToken_reEncryptsPanAndSavesVault() {
         KeyVersion newKey = buildKeyVersion(NEW_KEY_ID);
         TokenVault vault = buildVault(TOKEN_ID_1, OLD_KEY_ID);
-        stubKeyRingForBothVersions();
-        when(cipher.unwrapDek(any(), any())).thenReturn(new byte[32]);
-        when(cipher.wrapDek(any(), any())).thenReturn(new byte[60]);
+        stubDekRingForBothVersions();
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(new byte[16]);
+        when(cipher.encrypt(any(), any())).thenReturn(buildEncryptResult());
         when(keyVersionRepository.findById(NEW_KEY_ID)).thenReturn(Optional.of(newKey));
         when(tokenVaultRepository.findActiveByKeyVersionId(eq(OLD_KEY_ID), any(Pageable.class)))
                 .thenReturn(List.of(vault));
@@ -112,6 +111,8 @@ class RotationBatchProcessorTest {
 
         processor.processBatch(OLD_KEY_ID, NEW_KEY_ID, 10);
 
+        verify(cipher).decrypt(any(), any(), any(), any());
+        verify(cipher).encrypt(any(), any());
         verify(tokenVaultRepository).save(vault);
     }
 
@@ -119,9 +120,9 @@ class RotationBatchProcessorTest {
     void processBatch_singleToken_writesTokenReencryptedAuditEvent() {
         KeyVersion newKey = buildKeyVersion(NEW_KEY_ID);
         TokenVault vault = buildVault(TOKEN_ID_1, OLD_KEY_ID);
-        stubKeyRingForBothVersions();
-        when(cipher.unwrapDek(any(), any())).thenReturn(new byte[32]);
-        when(cipher.wrapDek(any(), any())).thenReturn(new byte[60]);
+        stubDekRingForBothVersions();
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(new byte[16]);
+        when(cipher.encrypt(any(), any())).thenReturn(buildEncryptResult());
         when(keyVersionRepository.findById(NEW_KEY_ID)).thenReturn(Optional.of(newKey));
         when(tokenVaultRepository.findActiveByKeyVersionId(eq(OLD_KEY_ID), any(Pageable.class)))
                 .thenReturn(List.of(vault));
@@ -139,9 +140,9 @@ class RotationBatchProcessorTest {
         KeyVersion newKey = buildKeyVersion(NEW_KEY_ID);
         TokenVault vault1 = buildVault(TOKEN_ID_1, OLD_KEY_ID);
         TokenVault vault2 = buildVault(TOKEN_ID_2, OLD_KEY_ID);
-        stubKeyRingForBothVersions();
-        when(cipher.unwrapDek(any(), any())).thenReturn(new byte[32]);
-        when(cipher.wrapDek(any(), any())).thenReturn(new byte[60]);
+        stubDekRingForBothVersions();
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(new byte[16]);
+        when(cipher.encrypt(any(), any())).thenReturn(buildEncryptResult());
         when(keyVersionRepository.findById(NEW_KEY_ID)).thenReturn(Optional.of(newKey));
         when(tokenVaultRepository.findActiveByKeyVersionId(eq(OLD_KEY_ID), any(Pageable.class)))
                 .thenReturn(List.of(vault1, vault2));
@@ -157,16 +158,16 @@ class RotationBatchProcessorTest {
     // ── Failure handling ──────────────────────────────────────────────────────
 
     @Test
-    void processBatch_unwrapFailsForOneToken_continuesBatchAndCountsFailure() {
+    void processBatch_decryptFailsForOneToken_continuesBatchAndCountsFailure() {
         KeyVersion newKey = buildKeyVersion(NEW_KEY_ID);
         TokenVault vault1 = buildVault(TOKEN_ID_1, OLD_KEY_ID);
         TokenVault vault2 = buildVault(TOKEN_ID_2, OLD_KEY_ID);
-        stubKeyRingForBothVersions();
-        // First token fails during DEK unwrap, second succeeds (chained stubs)
-        when(cipher.unwrapDek(any(), any()))
+        stubDekRingForBothVersions();
+        // First token fails during PAN decrypt, second succeeds
+        when(cipher.decrypt(any(), any(), any(), any()))
                 .thenThrow(new RuntimeException("AES-GCM auth tag mismatch"))
-                .thenReturn(new byte[32]);
-        when(cipher.wrapDek(any(), any())).thenReturn(new byte[60]);
+                .thenReturn(new byte[16]);
+        when(cipher.encrypt(any(), any())).thenReturn(buildEncryptResult());
         when(keyVersionRepository.findById(NEW_KEY_ID)).thenReturn(Optional.of(newKey));
         when(tokenVaultRepository.findActiveByKeyVersionId(eq(OLD_KEY_ID), any(Pageable.class)))
                 .thenReturn(List.of(vault1, vault2));
@@ -179,11 +180,11 @@ class RotationBatchProcessorTest {
     }
 
     @Test
-    void processBatch_rewrapFailsForOneToken_writesReEncryptionFailureAudit() {
+    void processBatch_decryptFailsForOneToken_writesReEncryptionFailureAudit() {
         KeyVersion newKey = buildKeyVersion(NEW_KEY_ID);
         TokenVault vault1 = buildVault(TOKEN_ID_1, OLD_KEY_ID);
-        stubKeyRingForBothVersions();
-        when(cipher.unwrapDek(any(), any()))
+        stubDekRingForBothVersions();
+        when(cipher.decrypt(any(), any(), any(), any()))
                 .thenThrow(new RuntimeException("AES-GCM failure"));
         when(keyVersionRepository.findById(NEW_KEY_ID)).thenReturn(Optional.of(newKey));
         when(tokenVaultRepository.findActiveByKeyVersionId(eq(OLD_KEY_ID), any(Pageable.class)))
@@ -198,16 +199,15 @@ class RotationBatchProcessorTest {
 
     @Test
     void reencryptSingleToken_optimisticLockFailure_propagatesException() {
-        // reencryptSingleToken runs in REQUIRES_NEW — the caller (processBatch) catches this
         KeyVersion newKey = buildKeyVersion(NEW_KEY_ID);
         TokenVault vault = buildVault(TOKEN_ID_1, OLD_KEY_ID);
-        stubKeyRingForBothVersions();
-        when(cipher.unwrapDek(any(), any())).thenReturn(new byte[32]);
-        when(cipher.wrapDek(any(), any())).thenReturn(new byte[60]);
+        stubDekRingForBothVersions();
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(new byte[16]);
+        when(cipher.encrypt(any(), any())).thenReturn(buildEncryptResult());
         when(tokenVaultRepository.save(vault))
                 .thenThrow(new ObjectOptimisticLockingFailureException(TokenVault.class, TOKEN_ID_1));
 
-        // reencryptSingleToken itself propagates the exception — processBatch catches it
+        // reencryptSingleToken runs in REQUIRES_NEW — the caller (processBatch) catches this
         org.junit.jupiter.api.Assertions.assertThrows(
                 ObjectOptimisticLockingFailureException.class,
                 () -> processor.reencryptSingleToken(vault, OLD_KEY_ID, NEW_KEY_ID, newKey));
@@ -230,17 +230,21 @@ class RotationBatchProcessorTest {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /**
-     * Stubs {@link InMemoryKekKeyRing#getByVersion} to return real {@link KeyMaterial} instances
+     * Stubs {@link InMemoryDekKeyRing#getByVersion} to return real {@link KeyMaterial} instances
      * for both the old and new key version IDs.
      *
-     * <p>The KEK bytes are all-zero 32-byte arrays — the cipher itself is mocked so the
+     * <p>The DEK bytes are all-zero 32-byte arrays — the cipher itself is mocked so the
      * actual key bytes are never used for cryptography in these unit tests.
      */
-    private void stubKeyRingForBothVersions() {
-        KeyMaterial oldMaterial = new KeyMaterial(OLD_KEY_ID.toString(), OLD_KEK, Instant.now().plusSeconds(3600));
-        KeyMaterial newMaterial = new KeyMaterial(NEW_KEY_ID.toString(), NEW_KEK, Instant.now().plusSeconds(3600));
-        when(keyRing.getByVersion(OLD_KEY_ID.toString())).thenReturn(oldMaterial);
-        when(keyRing.getByVersion(NEW_KEY_ID.toString())).thenReturn(newMaterial);
+    private void stubDekRingForBothVersions() {
+        KeyMaterial oldMaterial = new KeyMaterial(OLD_KEY_ID.toString(), OLD_DEK, Instant.now().plusSeconds(3600));
+        KeyMaterial newMaterial = new KeyMaterial(NEW_KEY_ID.toString(), NEW_DEK, Instant.now().plusSeconds(3600));
+        when(dekRing.getByVersion(OLD_KEY_ID.toString())).thenReturn(oldMaterial);
+        when(dekRing.getByVersion(NEW_KEY_ID.toString())).thenReturn(newMaterial);
+    }
+
+    private static EncryptResult buildEncryptResult() {
+        return new EncryptResult(new byte[16], new byte[12], new byte[16]);
     }
 
     private KeyVersion buildKeyVersion(UUID id) {
@@ -248,7 +252,7 @@ class RotationBatchProcessorTest {
                 .kmsKeyId("local-dev-key")
                 .kmsProvider("LOCAL_DEV")
                 .keyAlias("test-key")
-                .encryptedKekBlob("local-dev-key")
+                .encryptedDekBlob(new byte[60])
                 .status(KeyStatus.ACTIVE)
                 .activatedAt(Instant.now().minusSeconds(3600))
                 .rotateBy(Instant.now().plusSeconds(86400))
@@ -271,7 +275,6 @@ class RotationBatchProcessorTest {
                 .encryptedPan(new byte[]{1, 2, 3})
                 .iv(new byte[12])
                 .authTag(new byte[16])
-                .encryptedDek(new byte[60])
                 .keyVersion(kv)
                 .panHash("hash")
                 .lastFour("1111")

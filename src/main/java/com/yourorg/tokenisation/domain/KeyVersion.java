@@ -12,10 +12,10 @@ import java.util.UUID;
 /**
  * JPA entity representing one key version in the {@code key_versions} table.
  *
- * <p>A single table holds both KEK and HMAC key versions, discriminated by {@code key_type}.
- * KEK rows hold KMS-related fields ({@code kms_key_id}, {@code encrypted_kek_blob}, etc.)
+ * <p>A single table holds both DEK and HMAC key versions, discriminated by {@code key_type}.
+ * DEK rows hold KMS-related fields ({@code kms_key_id}, {@code encrypted_dek_blob}, etc.)
  * and leave HMAC fields null. HMAC rows hold {@code encrypted_secret} (KMS ciphertext
- * protected directly by the CMK with {@code purpose=hmac-key} context) and leave KEK fields null.
+ * protected directly by the CMK with {@code purpose=hmac-key} context) and leave DEK fields null.
  *
  * <p>Rows are intentionally immutable after creation — the only permitted mutations are
  * {@code status}, {@code rotation_reason}, and {@code retired_at}, controlled through
@@ -49,9 +49,9 @@ public class KeyVersion {
     @Column(name = "key_alias", nullable = false)
     private String keyAlias;
 
-    /** Base64-encoded KEK ciphertext from KMS. Null for HMAC rows. */
-    @Column(name = "encrypted_kek_blob")
-    private String encryptedKekBlob;
+    /** KMS ciphertext of the DEK (raw bytes from GenerateDataKey). Null for HMAC rows. */
+    @Column(name = "encrypted_dek_blob")
+    private byte[] encryptedDekBlob;
 
     /**
      * KMS ciphertext of the HMAC secret, protected directly by the CMK with
@@ -86,24 +86,29 @@ public class KeyVersion {
             String kmsKeyId,
             String kmsProvider,
             String keyAlias,
-            String encryptedKekBlob,
+            byte[] encryptedDekBlob,
             byte[] encryptedSecret,
             KeyStatus status,
             RotationReason rotationReason,
             Instant activatedAt,
             Instant rotateBy,
             String createdBy) {
-        this.keyType = keyType != null ? keyType : KeyType.KEK;
+        this.keyType = keyType != null ? keyType : KeyType.DEK;
         this.kmsKeyId = kmsKeyId;
         this.kmsProvider = kmsProvider;
         this.keyAlias = keyAlias;
-        this.encryptedKekBlob = encryptedKekBlob;
+        this.encryptedDekBlob = encryptedDekBlob != null ? encryptedDekBlob.clone() : null;
         this.encryptedSecret = encryptedSecret != null ? encryptedSecret.clone() : null;
         this.status = status;
         this.rotationReason = rotationReason;
         this.activatedAt = activatedAt;
         this.rotateBy = rotateBy;
         this.createdBy = createdBy;
+    }
+
+    /** Returns a defensive copy of the encrypted DEK blob. */
+    public byte[] getEncryptedDekBlob() {
+        return encryptedDekBlob != null ? encryptedDekBlob.clone() : null;
     }
 
     /** Factory method for HMAC key version rows. */

@@ -4,7 +4,7 @@ import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
 import com.yourorg.tokenisation.crypto.AesGcmCipher;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.crypto.KeyMaterial;
 import com.yourorg.tokenisation.crypto.PanHasher;
 import com.yourorg.tokenisation.domain.KeyStatus;
@@ -36,7 +36,7 @@ import static org.mockito.Mockito.*;
  *   <li>Happy path: PAN is decrypted, re-hashed under new version, vault is saved,
  *       PAN_HASH_RECOMPUTED audit event written
  *   <li>Empty batch: no crypto calls, zero counts returned
- *   <li>COMPROMISED KEK: record is skipped with RE_HASH_SKIPPED_COMPROMISED_KEY audit
+ *   <li>COMPROMISED DEK: record is skipped with RE_HASH_SKIPPED_COMPROMISED_KEY audit
  *   <li>Single record failure: batch continues, failure logged
  * </ul>
  */
@@ -45,19 +45,18 @@ class PanHashBatchProcessorTest {
 
     private static final UUID ROTATING_HMAC_ID = UUID.fromString("aaaaaaaa-0000-0000-0000-000000000001");
     private static final UUID NEW_HMAC_ID       = UUID.fromString("bbbbbbbb-0000-0000-0000-000000000002");
-    private static final UUID KEK_VERSION_ID    = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    private static final UUID DEK_VERSION_ID    = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID TOKEN_ID          = UUID.fromString("cccccccc-0000-0000-0000-000000000001");
 
-    private static final byte[] FAKE_KEK        = new byte[32];
+    private static final byte[] FAKE_DEK_BYTES  = new byte[32];
     private static final byte[] FAKE_ENCRYPTED  = new byte[]{1, 2, 3};
     private static final byte[] FAKE_IV         = new byte[12];
     private static final byte[] FAKE_AUTH_TAG   = new byte[16];
-    private static final byte[] FAKE_DEK        = new byte[60];
     private static final byte[] PAN_BYTES       = "4111111111111111".getBytes();
     private static final String NEW_HASH        = "new-hash-value";
 
     @Mock private TokenVaultRepository tokenVaultRepository;
-    @Mock private InMemoryKekKeyRing keyRing;
+    @Mock private InMemoryDekKeyRing dekRing;
     @Mock private AesGcmCipher cipher;
     @Mock private PanHasher panHasher;
     @Mock private AuditLogger auditLogger;
@@ -71,7 +70,7 @@ class PanHashBatchProcessorTest {
         props.getHmacBatch().setSize(10);
 
         processor = new PanHashBatchProcessor(
-                tokenVaultRepository, keyRing, cipher, panHasher, auditLogger, props);
+                tokenVaultRepository, dekRing, cipher, panHasher, auditLogger, props);
         // No Spring proxy in unit tests — self must point to the instance directly
         processor.self = processor;
     }
@@ -80,15 +79,15 @@ class PanHashBatchProcessorTest {
 
     @Test
     void processBatch_happyPath_rehashesAndSavesVaultRecord() {
-        TokenVault vault = buildVault(KEK_VERSION_ID);
-        KeyMaterial kekMaterial = new KeyMaterial(KEK_VERSION_ID.toString(), FAKE_KEK,
+        TokenVault vault = buildVault(DEK_VERSION_ID);
+        KeyMaterial dekMaterial = new KeyMaterial(DEK_VERSION_ID.toString(), FAKE_DEK_BYTES,
                 Instant.now().plusSeconds(3600));
 
         when(tokenVaultRepository.findActiveByHmacVersionId(
                 eq(ROTATING_HMAC_ID), any(Pageable.class)))
                 .thenReturn(List.of(vault));
-        when(keyRing.getByVersion(KEK_VERSION_ID.toString())).thenReturn(kekMaterial);
-        when(cipher.decrypt(any(), any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
+        when(dekRing.getByVersion(DEK_VERSION_ID.toString())).thenReturn(dekMaterial);
+        when(cipher.decrypt(any(), any(), any(), any())).thenReturn(PAN_BYTES.clone());
         when(panHasher.hashWithVersion(anyString(), eq(NEW_HMAC_ID.toString()))).thenReturn(NEW_HASH);
         when(tokenVaultRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -118,24 +117,24 @@ class PanHashBatchProcessorTest {
         assertThat(result.processedCount()).isZero();
         assertThat(result.failedCount()).isZero();
         assertThat(result.totalFetched()).isZero();
-        verify(cipher, never()).decrypt(any(), any(), any(), any(), any());
+        verify(cipher, never()).decrypt(any(), any(), any(), any());
         verify(tokenVaultRepository, never()).save(any());
     }
 
-    // ── Compromised KEK ───────────────────────────────────────────────────────
+    // ── Compromised DEK ───────────────────────────────────────────────────────
 
     @Test
-    void rehashSingleVault_compromisedKek_skipsWithAuditAndNoDbWrite() {
-        TokenVault vault = buildVault(KEK_VERSION_ID);
+    void rehashSingleVault_compromisedDek_skipsWithAuditAndNoDbWrite() {
+        TokenVault vault = buildVault(DEK_VERSION_ID);
         KeyMaterial compromisedMaterial = new KeyMaterial(
-                KEK_VERSION_ID.toString(), FAKE_KEK, Instant.now().plusSeconds(3600))
+                DEK_VERSION_ID.toString(), FAKE_DEK_BYTES, Instant.now().plusSeconds(3600))
                 .asCompromised();
 
-        when(keyRing.getByVersion(KEK_VERSION_ID.toString())).thenReturn(compromisedMaterial);
+        when(dekRing.getByVersion(DEK_VERSION_ID.toString())).thenReturn(compromisedMaterial);
 
         processor.rehashSingleVault(vault, NEW_HMAC_ID);
 
-        verify(cipher, never()).decrypt(any(), any(), any(), any(), any());
+        verify(cipher, never()).decrypt(any(), any(), any(), any());
         verify(tokenVaultRepository, never()).save(any());
         verify(auditLogger).logSuccess(
                 eq(AuditEventType.RE_HASH_SKIPPED_COMPROMISED_KEY),
@@ -146,15 +145,15 @@ class PanHashBatchProcessorTest {
 
     @Test
     void processBatch_oneRecordFails_batchContinuesAndCountsFailure() {
-        TokenVault vault = buildVault(KEK_VERSION_ID);
-        KeyMaterial kekMaterial = new KeyMaterial(KEK_VERSION_ID.toString(), FAKE_KEK,
+        TokenVault vault = buildVault(DEK_VERSION_ID);
+        KeyMaterial dekMaterial = new KeyMaterial(DEK_VERSION_ID.toString(), FAKE_DEK_BYTES,
                 Instant.now().plusSeconds(3600));
 
         when(tokenVaultRepository.findActiveByHmacVersionId(
                 eq(ROTATING_HMAC_ID), any(Pageable.class)))
                 .thenReturn(List.of(vault));
-        when(keyRing.getByVersion(KEK_VERSION_ID.toString())).thenReturn(kekMaterial);
-        when(cipher.decrypt(any(), any(), any(), any(), any()))
+        when(dekRing.getByVersion(DEK_VERSION_ID.toString())).thenReturn(dekMaterial);
+        when(cipher.decrypt(any(), any(), any(), any()))
                 .thenThrow(new RuntimeException("decryption failed"));
 
         RotationBatchProcessor.BatchResult result =
@@ -169,15 +168,14 @@ class PanHashBatchProcessorTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private TokenVault buildVault(UUID kekVersionId) {
-        KeyVersion kekVersion = buildKekVersion(kekVersionId);
+    private TokenVault buildVault(UUID dekVersionId) {
+        KeyVersion dekVersion = buildDekVersion(dekVersionId);
         TokenVault vault = TokenVault.builder()
                 .token("some-token")
                 .encryptedPan(FAKE_ENCRYPTED)
                 .iv(FAKE_IV)
                 .authTag(FAKE_AUTH_TAG)
-                .encryptedDek(FAKE_DEK)
-                .keyVersion(kekVersion)
+                .keyVersion(dekVersion)
                 .panHash("old-hash")
                 .hmacKeyVersionId(ROTATING_HMAC_ID)
                 .lastFour("1111")
@@ -189,13 +187,13 @@ class PanHashBatchProcessorTest {
         return vault;
     }
 
-    private static KeyVersion buildKekVersion(UUID id) {
+    private static KeyVersion buildDekVersion(UUID id) {
         KeyVersion kv = KeyVersion.builder()
-                .keyType(KeyType.KEK)
-                .keyAlias("test-kek")
+                .keyType(KeyType.DEK)
+                .keyAlias("test-dek")
                 .kmsKeyId("local-dev")
                 .kmsProvider("LOCAL_DEV")
-                .encryptedKekBlob("blob")
+                .encryptedDekBlob(new byte[60])
                 .status(KeyStatus.ACTIVE)
                 .activatedAt(Instant.now())
                 .rotateBy(Instant.now().plusSeconds(3600))

@@ -3,10 +3,11 @@ package com.yourorg.tokenisation.rotation;
 import com.yourorg.tokenisation.audit.AuditEventType;
 import com.yourorg.tokenisation.audit.AuditLogger;
 import com.yourorg.tokenisation.config.RotationProperties;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.RotationReason;
+import com.yourorg.tokenisation.kms.DataKey;
 import com.yourorg.tokenisation.kms.KmsProvider;
 import com.yourorg.tokenisation.repository.KeyVersionRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,11 +48,11 @@ class KeyRotationServiceTest {
 
     private static final UUID ACTIVE_KEY_ID = UUID.fromString("aaaaaaaa-0000-0000-0000-000000000001");
     private static final UUID NEW_KEY_ID    = UUID.fromString("bbbbbbbb-0000-0000-0000-000000000002");
-    private static final byte[] DUMMY_KEK   = new byte[32];
+    private static final byte[] DUMMY_DEK   = new byte[32];
 
     @Mock private KeyVersionRepository keyVersionRepository;
     @Mock private KmsProvider kmsProvider;
-    @Mock private InMemoryKekKeyRing keyRing;
+    @Mock private InMemoryDekKeyRing dekRing;
     @Mock private AuditLogger auditLogger;
     @Mock private ApplicationEventPublisher eventPublisher;
 
@@ -62,7 +63,7 @@ class KeyRotationServiceTest {
         RotationProperties props = new RotationProperties();
         props.getCompliance().setMaxKeyAgeDays(365);
         service = new KeyRotationService(keyVersionRepository, kmsProvider,
-                keyRing, auditLogger, eventPublisher, props);
+                dekRing, auditLogger, eventPublisher, props);
     }
 
     // ── Scheduled rotation ────────────────────────────────────────────────────
@@ -70,9 +71,10 @@ class KeyRotationServiceTest {
     @Test
     void initiateScheduledRotation_transitionsOldKeyToRotating() {
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        stubGenerateDataKey();
         stubSaveToAssignId(NEW_KEY_ID);
-        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
-        when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
+        when(keyVersionRepository.findActiveDekOrThrow()).thenReturn(activeKey);
+        when(kmsProvider.decryptDataKey(any(byte[].class))).thenReturn(DUMMY_DEK.clone());
 
         service.initiateScheduledRotation("new-key-alias", RotationReason.SCHEDULED);
 
@@ -82,22 +84,24 @@ class KeyRotationServiceTest {
     @Test
     void initiateScheduledRotation_loadsAndPromotesNewKeyInRing() {
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        stubGenerateDataKey();
         stubSaveToAssignId(NEW_KEY_ID);
-        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
-        when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
+        when(keyVersionRepository.findActiveDekOrThrow()).thenReturn(activeKey);
+        when(kmsProvider.decryptDataKey(any(byte[].class))).thenReturn(DUMMY_DEK.clone());
 
         service.initiateScheduledRotation("new-key-alias", RotationReason.SCHEDULED);
 
-        verify(keyRing).load(eq(NEW_KEY_ID.toString()), any(), any());
-        verify(keyRing).promoteActive(NEW_KEY_ID.toString());
+        verify(dekRing).load(eq(NEW_KEY_ID.toString()), any(), any());
+        verify(dekRing).promoteActive(NEW_KEY_ID.toString());
     }
 
     @Test
     void initiateScheduledRotation_writesKeyRotationStartedAuditEvent() {
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        stubGenerateDataKey();
         stubSaveToAssignId(NEW_KEY_ID);
-        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
-        when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
+        when(keyVersionRepository.findActiveDekOrThrow()).thenReturn(activeKey);
+        when(kmsProvider.decryptDataKey(any(byte[].class))).thenReturn(DUMMY_DEK.clone());
 
         service.initiateScheduledRotation("new-key-alias", RotationReason.SCHEDULED);
 
@@ -107,17 +111,19 @@ class KeyRotationServiceTest {
     }
 
     @Test
-    void initiateScheduledRotation_kekZeroedAfterRingLoad() {
-        byte[] capturedKek = new byte[32];
-        capturedKek[0] = 0x42;
+    void initiateScheduledRotation_plaintextDekZeroedAfterRingLoad() {
+        byte[] capturedDek = new byte[32];
+        capturedDek[0] = 0x42;
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        when(kmsProvider.generateDataKey())
+                .thenReturn(new DataKey(capturedDek, new byte[60]));
         stubSaveToAssignId(NEW_KEY_ID);
-        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
-        when(kmsProvider.unwrapKek(any())).thenReturn(capturedKek);
+        when(keyVersionRepository.findActiveDekOrThrow()).thenReturn(activeKey);
+        when(kmsProvider.decryptDataKey(any(byte[].class))).thenReturn(DUMMY_DEK.clone());
 
         service.initiateScheduledRotation("alias", RotationReason.SCHEDULED);
 
-        assertThat(capturedKek).containsOnly((byte) 0);
+        assertThat(capturedDek).containsOnly((byte) 0);
     }
 
     // ── Emergency rotation ────────────────────────────────────────────────────
@@ -125,9 +131,10 @@ class KeyRotationServiceTest {
     @Test
     void initiateEmergencyRotation_marksCompromisedKeyInDb() {
         KeyVersion compromisedKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        stubGenerateDataKey();
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
-        when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
+        when(kmsProvider.decryptDataKey(any(byte[].class))).thenReturn(DUMMY_DEK.clone());
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
@@ -137,34 +144,37 @@ class KeyRotationServiceTest {
     @Test
     void initiateEmergencyRotation_marksCompromisedKeyInRing() {
         KeyVersion compromisedKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        stubGenerateDataKey();
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
-        when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
+        when(kmsProvider.decryptDataKey(any(byte[].class))).thenReturn(DUMMY_DEK.clone());
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
-        verify(keyRing).markCompromised(ACTIVE_KEY_ID.toString());
+        verify(dekRing).markCompromised(ACTIVE_KEY_ID.toString());
     }
 
     @Test
     void initiateEmergencyRotation_loadsAndPromotesNewKeyInRing() {
         KeyVersion compromisedKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        stubGenerateDataKey();
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
-        when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
+        when(kmsProvider.decryptDataKey(any(byte[].class))).thenReturn(DUMMY_DEK.clone());
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
-        verify(keyRing).load(eq(NEW_KEY_ID.toString()), any(), any());
-        verify(keyRing).promoteActive(NEW_KEY_ID.toString());
+        verify(dekRing).load(eq(NEW_KEY_ID.toString()), any(), any());
+        verify(dekRing).promoteActive(NEW_KEY_ID.toString());
     }
 
     @Test
     void initiateEmergencyRotation_writesEmergencyRotationStartedAndKeyIntegrityViolationAudit() {
         KeyVersion compromisedKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        stubGenerateDataKey();
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
-        when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
+        when(kmsProvider.decryptDataKey(any(byte[].class))).thenReturn(DUMMY_DEK.clone());
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
@@ -178,9 +188,10 @@ class KeyRotationServiceTest {
     @Test
     void initiateEmergencyRotation_publishesSecurityAlertEvent() {
         KeyVersion compromisedKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
+        stubGenerateDataKey();
         stubSaveToAssignId(NEW_KEY_ID);
         when(keyVersionRepository.findById(ACTIVE_KEY_ID)).thenReturn(Optional.of(compromisedKey));
-        when(kmsProvider.unwrapKek(any())).thenReturn(DUMMY_KEK.clone());
+        when(kmsProvider.decryptDataKey(any(byte[].class))).thenReturn(DUMMY_DEK.clone());
 
         service.initiateEmergencyRotation(ACTIVE_KEY_ID, "emergency-key");
 
@@ -203,15 +214,15 @@ class KeyRotationServiceTest {
     @Test
     void getActiveKeyVersionId_activeKeyExists_returnsItsUuid() {
         KeyVersion activeKey = buildKeyVersion(ACTIVE_KEY_ID, KeyStatus.ACTIVE);
-        when(keyVersionRepository.findActiveKekOrThrow()).thenReturn(activeKey);
+        when(keyVersionRepository.findActiveDekOrThrow()).thenReturn(activeKey);
 
         assertThat(service.getActiveKeyVersionId()).isEqualTo(ACTIVE_KEY_ID);
     }
 
     @Test
     void getActiveKeyVersionId_noActiveKey_propagatesIllegalStateException() {
-        when(keyVersionRepository.findActiveKekOrThrow())
-                .thenThrow(new IllegalStateException("No ACTIVE KEK version found"));
+        when(keyVersionRepository.findActiveDekOrThrow())
+                .thenThrow(new IllegalStateException("No ACTIVE DEK version found"));
 
         assertThatThrownBy(() -> service.getActiveKeyVersionId())
                 .isInstanceOf(IllegalStateException.class);
@@ -219,12 +230,17 @@ class KeyRotationServiceTest {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    private void stubGenerateDataKey() {
+        when(kmsProvider.generateDataKey())
+                .thenReturn(new DataKey(new byte[32], new byte[60]));
+    }
+
     private KeyVersion buildKeyVersion(UUID id, KeyStatus status) {
         KeyVersion kv = KeyVersion.builder()
                 .kmsKeyId("local-dev-key")
                 .kmsProvider("LOCAL_DEV")
                 .keyAlias("test-key")
-                .encryptedKekBlob("local-dev-key")
+                .encryptedDekBlob(new byte[60])
                 .status(status)
                 .activatedAt(Instant.now().minusSeconds(3600))
                 .rotateBy(Instant.now().plusSeconds(86400 * 365))

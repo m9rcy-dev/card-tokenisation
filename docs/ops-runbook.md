@@ -26,8 +26,8 @@ Before any production deployment, verify these are all absent from the running c
 
 | Item | Risk | Action |
 |------|------|--------|
-| `KMS_PROVIDER=local-dev` | Plaintext KEK in environment | Set `KMS_PROVIDER=aws` |
-| `KMS_LOCAL_DEV_KEK_HEX` set | Known KEK in env | Remove entirely |
+| `KMS_PROVIDER=local-dev` | Local KMS simulation active | Set `KMS_PROVIDER=aws` |
+| `KMS_LOCAL_DEV_KEK_HEX` set | Known local master key in env | Remove entirely — not valid in production |
 | Swagger UI reachable | Exposes API schema | Disable or firewall |
 | `anyRequest().permitAll()` in `SecurityConfig` | Zero auth | See §5 before deploying |
 | Default DB superuser as app user | Overprivileged | Use `tokenisation_app` role |
@@ -716,7 +716,7 @@ Old partitions can be archived (e.g., to S3 via `COPY TO`) after the 7-year rete
 | Detokenisation 5xx rate | > 0.5% | HIGH | Merchant impact |
 | HikariCP active connections | > 90% of pool | WARN | Pool exhaustion approaching |
 | HikariCP pending threads | > 0 sustained 1 min | HIGH | Pool exhausted |
-| KEK rotation lag | tokens on old key > 0 for > 2 hours | WARN | Rotation batch stalled |
+| DEK rotation lag | tokens on old DEK version > 0 for > 2 hours | WARN | Rotation batch stalled |
 | HMAC rotation lag | vault rows on rotating HMAC version > 0 for > 24 hours | WARN | HMAC batch stalled |
 | Audit write failures | any | HIGH | Compliance log gap |
 | Health endpoint status | not UP for > 30s | HIGH | Service unavailable |
@@ -804,13 +804,13 @@ SELECT COUNT(*) FROM token_audit_log
 WHERE event_type = 'PAN_HASH_RECOMPUTED'
   AND created_at > NOW() - INTERVAL '1 hour';
 
--- Skipped re-hashes during HMAC rotation (KEK compromised mid-batch)
+-- Skipped re-hashes during HMAC rotation (DEK compromised mid-batch)
 SELECT COUNT(*) FROM token_audit_log
 WHERE event_type = 'RE_HASH_SKIPPED_COMPROMISED_KEY'
   AND created_at > NOW() - INTERVAL '1 hour';
 ```
 
-A non-zero `RE_HASH_SKIPPED_COMPROMISED_KEY` count means a KEK was marked COMPROMISED while the HMAC batch was running. Complete the KEK rotation first, then resume the HMAC batch.
+A non-zero `RE_HASH_SKIPPED_COMPROMISED_KEY` count means a DEK was marked COMPROMISED while the HMAC batch was running. Complete the DEK rotation first, then resume the HMAC batch.
 
 ---
 
@@ -949,7 +949,7 @@ public DetokeniseResponse detokenise(String token, String merchantId) { ... }
 
 ## 7. Incident Response Procedures
 
-### 7.1 Key Compromise
+### 7.1 DEK Compromise
 
 1. Identify the compromised key version UUID from the audit log or security alert.
 2. Call the emergency rotation endpoint:
@@ -1000,7 +1000,7 @@ If the application fails to start with `AES-GCM auth tag mismatch` during HMAC r
 1. **Do not restart in a loop** — each attempt logs evidence that may be needed.
 2. The `encrypted_secret` column of an HMAC `key_versions` row has been modified — GCM auth tags detect any byte-level change.
 3. Restore the affected row from the last known-good database backup.
-4. If a backup is unavailable, initiate an emergency KEK rotation and re-seed the HMAC key via `LocalDevHmacKeySeeder` (local dev) or `HmacKeyBootstrapService` (production with `PAN_HASH_SECRET`). Note: all existing `pan_hash` values will be invalidated — de-duplication lookups will fail until the HMAC rotation batch completes.
+4. If a backup is unavailable, initiate an emergency DEK rotation and re-seed the HMAC key via `LocalDevHmacKeySeeder` (local dev) or `HmacKeyBootstrapService` (production with `PAN_HASH_SECRET`). Note: all existing `pan_hash` values will be invalidated — de-duplication lookups will fail until the HMAC rotation batch completes.
 5. Escalate to the security team — a modified HMAC key row indicates unauthorized DB access.
 
 ---
@@ -1016,7 +1016,7 @@ If the application fails to start with `AES-GCM auth tag mismatch` during HMAC r
 | `KMS_PROVIDER` | Yes | `aws` in production |
 | `AWS_REGION` | Yes (if aws) | e.g. `ap-southeast-2` |
 | `AWS_KMS_KEY_ARN` | Yes (if aws) | Full ARN of the CMK |
-| `KMS_LOCAL_DEV_KEK_HEX` | No | Local dev only; must not be set in production |
+| `KMS_LOCAL_DEV_KEK_HEX` | No | Local dev only — the 32-byte master key for `LocalDevKmsAdapter`; must not be set in production |
 | `SSL_KEYSTORE_PATH` | If mTLS at app layer | Path to PKCS12 keystore |
 | `SSL_KEYSTORE_PASSWORD` | If mTLS at app layer | From secrets manager |
 | `SSL_TRUSTSTORE_PATH` | If mTLS at app layer | Path to PKCS12 truststore |
@@ -1027,9 +1027,9 @@ If the application fails to start with `AES-GCM auth tag mismatch` during HMAC r
 The application will **fail to start** (intentionally) if any of these are missing or invalid:
 
 - `DATASOURCE_URL`, `DATASOURCE_USER`, `DATASOURCE_PASSWORD` — Flyway and HikariCP will throw
-- `KMS_LOCAL_DEV_KEK_HEX` when `KMS_PROVIDER=local-dev` — No fallback (removed in §1.1)
+- `KMS_LOCAL_DEV_KEK_HEX` when `KMS_PROVIDER=local-dev` — No fallback; must be set explicitly
 - KMS unreachable at startup — `KeyRingInitialiser` throws and stops context load
-- No `ACTIVE` KEK row in `key_versions` — `KeyRingInitialiser` throws
+- No `ACTIVE` DEK row in `key_versions` — `KeyRingInitialiser` throws
 - No `ACTIVE` HMAC row in `key_versions` and `PAN_HASH_SECRET` not set — `HmacKeyBootstrapService` logs a warning and tokenisation will fail at runtime (not startup)
 
 This fail-fast behaviour is intentional. A partially initialised tokenisation service that

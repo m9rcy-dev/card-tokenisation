@@ -16,80 +16,50 @@ package com.yourorg.tokenisation.kms;
  *
  * <p>KMS calls are intentionally minimised:
  * <ul>
- *   <li>{@link #unwrapKek} is called once per key version at startup only
- *   <li>DEKs are not generated via KMS — they are generated locally using {@code SecureRandom}
- *       and wrapped in-process using {@link #wrapDek} with the in-memory KEK
- *   <li>{@link #rewrapDek} is called only during key rotation, not during normal tokenisation
+ *   <li>{@link #decryptDataKey} is called once per DEK version at startup only
+ *   <li>{@link #generateDataKey} is called once per rotation event (not per tokenisation)
+ *   <li>Normal tokenisation uses the in-memory DEK from the ring — zero KMS calls
  * </ul>
  */
 public interface KmsProvider {
 
     /**
-     * Decrypts a stored KEK ciphertext blob and returns the raw KEK bytes.
+     * Generates a new Data Encryption Key (DEK) and returns both its plaintext and
+     * KMS-encrypted forms.
      *
-     * <p>Called once per key version at application startup by {@code KeyRingInitialiser}.
-     * The returned bytes are held in the {@code InMemoryKekKeyRing} for the application's lifetime
-     * (or until TTL refresh). The caller is responsible for not logging the returned bytes.
+     * <p>For AWS: calls {@code kms:GenerateDataKey(AES_256)} — one atomic round-trip that
+     * returns both forms. For other providers: generates 32 random bytes locally and encrypts
+     * them with the provider-specific mechanism.
      *
-     * @param encryptedKekBlob Base64-encoded KEK ciphertext as stored in {@code key_versions.encrypted_kek_blob};
-     *                         must not be null or empty
-     * @return the raw 32-byte (AES-256) KEK; the caller must zero this array after loading it into the key ring
-     * @throws IllegalArgumentException if {@code encryptedKekBlob} is null or empty
+     * <p>Used by seeders on first boot and by {@code KeyRotationService} on each rotation.
+     * The {@link DataKey#plaintextDek()} must be zeroed by the caller after loading into the ring.
+     * The {@link DataKey#encryptedDekBlob()} is stored in {@code key_versions.encrypted_dek_blob}.
+     *
+     * @return a {@link DataKey} holding both plaintext and encrypted forms of the new DEK
+     * @throws KmsOperationException if the KMS call fails
+     */
+    DataKey generateDataKey();
+
+    /**
+     * Decrypts a stored encrypted DEK blob and returns the raw 32-byte DEK.
+     *
+     * <p>Called once per DEK version at startup by {@code KeyRingInitialiser}.
+     * The returned bytes are loaded into {@code InMemoryDekKeyRing} and the array is
+     * zeroed immediately after loading. The caller is responsible for zeroing the array.
+     *
+     * @param encryptedDekBlob the KMS ciphertext as stored in {@code key_versions.encrypted_dek_blob}; must not be null
+     * @return the raw 32-byte (AES-256) DEK; the caller must zero this array after loading it into the ring
+     * @throws IllegalArgumentException if {@code encryptedDekBlob} is null
      * @throws KmsOperationException    if the KMS call fails or the blob cannot be decrypted
      */
-    byte[] unwrapKek(String encryptedKekBlob);
-
-    /**
-     * Encrypts a freshly generated KEK under the KMS master key and returns the blob for storage.
-     *
-     * <p>Used exclusively by {@code KeyRotationService} when initiating a scheduled or emergency
-     * rotation to persist genuinely new key material. The returned string is stored verbatim in
-     * {@code key_versions.encrypted_kek_blob} and can later be reversed by {@link #unwrapKek}.
-     *
-     * <p>Callers must zero {@code plaintextKek} immediately after this method returns.
-     *
-     * @param plaintextKek the raw 32-byte KEK to protect; must not be null; must be exactly 32 bytes
-     * @return the KMS-encrypted KEK blob, Base64-encoded, safe for storage as TEXT
-     * @throws IllegalArgumentException if {@code plaintextKek} is not 32 bytes
-     * @throws KmsOperationException    if the KMS call fails
-     */
-    String wrapNewKek(byte[] plaintextKek);
-
-    /**
-     * Wraps a locally generated DEK under the current KEK and returns the encrypted blob for storage.
-     *
-     * <p>This method is used during rotation to re-wrap an existing DEK under a new KEK.
-     * It does NOT generate a new DEK — DEK generation is done locally in {@code AesGcmCipher}.
-     *
-     * @param plaintextDek   the raw 32-byte DEK to wrap; must not be null; must be exactly 32 bytes
-     * @param keyVersionId   the key version whose KEK is used to wrap the DEK; used for encryption context
-     * @return the KEK-wrapped DEK bytes, safe for storage in {@code token_vault.encrypted_dek}
-     * @throws IllegalArgumentException if {@code plaintextDek} is not 32 bytes
-     * @throws KmsOperationException    if the wrap operation fails
-     */
-    byte[] wrapDek(byte[] plaintextDek, String keyVersionId);
-
-    /**
-     * Re-wraps a DEK: decrypts it under the old KEK, then re-encrypts it under the new KEK.
-     *
-     * <p>Called by the rotation batch processor for each token record during key rotation.
-     * The plaintext DEK bytes are held in memory only for the duration of this call
-     * and must be zeroed by the implementation before returning.
-     *
-     * @param encryptedDek      the DEK wrapped under the old KEK; must not be null
-     * @param oldKeyVersionId   the key version that wrapped {@code encryptedDek}; used for decryption context
-     * @param newKeyVersionId   the key version to wrap the DEK under; used for encryption context
-     * @return the DEK re-wrapped under the new KEK, safe for storage
-     * @throws KmsOperationException if either the unwrap or re-wrap operation fails
-     */
-    byte[] rewrapDek(byte[] encryptedDek, String oldKeyVersionId, String newKeyVersionId);
+    byte[] decryptDataKey(byte[] encryptedDekBlob);
 
     /**
      * Encrypts a freshly generated HMAC secret under the KMS master key for storage.
      *
-     * <p>Uses encryption context {@code purpose=hmac-key}, distinct from {@code purpose=kek-unwrap},
-     * so that a blob encrypted by this method cannot be decrypted via {@link #unwrapKek} and vice versa.
-     * The HMAC secret is protected directly by the CMK — independent of the application KEK.
+     * <p>Uses encryption context {@code purpose=hmac-key}, distinct from the DEK context,
+     * so that a blob encrypted by this method cannot be decrypted via {@link #decryptDataKey}
+     * and vice versa.
      *
      * <p>Callers must zero {@code plaintextHmacKey} immediately after this method returns.
      *

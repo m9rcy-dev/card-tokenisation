@@ -3,8 +3,8 @@ package com.yourorg.tokenisation;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.crypto.InMemoryHmacKeyRing;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.RotationReason;
@@ -31,18 +31,17 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration tests for KEK and HMAC rotation using a real LocalStack KMS instance.
+ * Integration tests for DEK and HMAC rotation using a real LocalStack KMS instance.
  *
- * <p>Verifies that the full rotation runbook works when KMS calls (KEK unwrap) go to a
- * real AWS-compatible API (LocalStack) rather than the local-dev stub.
+ * <p>Verifies that the full rotation runbook works when KMS calls go to a real
+ * AWS-compatible API (LocalStack) rather than the local-dev stub.
  *
- * <h3>LS-R-1: KEK envelope rotation</h3>
+ * <h3>LS-R-1: DEK rotation</h3>
  * <ol>
- *   <li>Pre-tokenise PANs under the seed KEK version.
- *   <li>Initiate scheduled rotation — LocalStack KMS is called to unwrap the KEK for the
- *       new version (same encrypted blob, different key_versions UUID).
+ *   <li>Pre-tokenise PANs under the seed DEK version.
+ *   <li>Initiate scheduled rotation — LocalStack KMS is called to generate the new DEK.
  *   <li>Assert the old key is ROTATING; old tokens are still detokenisable.
- *   <li>Process the re-encryption batch (in-memory DEK rewrap, no KMS call).
+ *   <li>Process the re-encryption batch (PAN re-encrypted with new DEK).
  *   <li>Assert old key is RETIRED, all tokens detokenisable under new key, audit trail complete.
  * </ol>
  *
@@ -73,12 +72,12 @@ class LocalStackRotationTest extends AbstractLocalStackIntegrationTest {
     @Autowired private RotationJob           rotationJob;
     @Autowired private HmacRotationService   hmacRotationService;
     @Autowired private HmacRotationJob       hmacRotationJob;
-    @Autowired private InMemoryKekKeyRing    kekKeyRing;
+    @Autowired private InMemoryDekKeyRing    dekRing;
     @Autowired private InMemoryHmacKeyRing   hmacKeyRing;
     @Autowired private KmsProvider           kmsProvider;
 
     // Discovered dynamically in @BeforeEach by key_alias
-    private String seedKekId;
+    private String seedDekId;
     private String seedHmacId;
 
     @BeforeEach
@@ -86,29 +85,29 @@ class LocalStackRotationTest extends AbstractLocalStackIntegrationTest {
         jdbcTemplate.execute("DELETE FROM token_vault");
         jdbcTemplate.execute("DELETE FROM token_audit_log");
 
-        seedKekId = jdbcTemplate.queryForObject(
-                "SELECT id::text FROM key_versions WHERE key_type='KEK' AND key_alias=?",
-                String.class, SEED_KEK_ALIAS);
+        seedDekId = jdbcTemplate.queryForObject(
+                "SELECT id::text FROM key_versions WHERE key_type='DEK' AND key_alias=?",
+                String.class, SEED_DEK_ALIAS);
         seedHmacId = jdbcTemplate.queryForObject(
                 "SELECT id::text FROM key_versions WHERE key_type='HMAC' AND key_alias=?",
                 String.class, SEED_HMAC_ALIAS);
 
-        // Reset KEK rows: retire everything except seed, re-activate seed
+        // Reset DEK rows: retire everything except seed, re-activate seed
         jdbcTemplate.update(
                 "UPDATE key_versions SET status='RETIRED', retired_at=NULL "
-                        + "WHERE key_type='KEK' AND id != '" + seedKekId + "'::uuid");
+                        + "WHERE key_type='DEK' AND id != '" + seedDekId + "'::uuid");
         jdbcTemplate.update(
                 "UPDATE key_versions SET status='ACTIVE', retired_at=NULL "
-                        + "WHERE id='" + seedKekId + "'::uuid");
+                        + "WHERE id='" + seedDekId + "'::uuid");
 
-        // Reload seed KEK into ring via LocalStack KMS — this is the integration test!
-        KeyVersion seedKek = keyVersionRepository.findById(UUID.fromString(seedKekId)).orElseThrow();
-        byte[] kekBytes = kmsProvider.unwrapKek(seedKek.getEncryptedKekBlob());
+        // Reload seed DEK into ring via LocalStack KMS decryptDataKey — this is the integration test!
+        KeyVersion seedDek = keyVersionRepository.findById(UUID.fromString(seedDekId)).orElseThrow();
+        byte[] dekBytes = kmsProvider.decryptDataKey(seedDek.getEncryptedDekBlob());
         try {
-            kekKeyRing.load(seedKekId, kekBytes, seedKek.getRotateBy());
-            kekKeyRing.promoteActive(seedKekId);
+            dekRing.load(seedDekId, dekBytes, seedDek.getRotateBy());
+            dekRing.promoteActive(seedDekId);
         } finally {
-            Arrays.fill(kekBytes, (byte) 0);
+            Arrays.fill(dekBytes, (byte) 0);
         }
 
         // Reset HMAC rows: retire non-seed, re-activate seed
@@ -139,67 +138,67 @@ class LocalStackRotationTest extends AbstractLocalStackIntegrationTest {
         hmacKeyRing.promoteActive(seedHmacId);
     }
 
-    // ── LS-R-1: KEK envelope rotation ─────────────────────────────────────────
+    // ── LS-R-1: DEK rotation ──────────────────────────────────────────────────
 
     @Test
-    void kekRotation_oldKeyBecomesRotating_localStackKmsUnwrapsNewKey() {
-        keyRotationService.initiateScheduledRotation("ls-kek-v2", RotationReason.SCHEDULED);
+    void dekRotation_oldKeyBecomesRotating_localStackKmsGeneratesNewDek() {
+        keyRotationService.initiateScheduledRotation("ls-dek-v2", RotationReason.SCHEDULED);
 
-        assertThat(keyVersionRepository.findById(UUID.fromString(seedKekId)).orElseThrow().getStatus())
+        assertThat(keyVersionRepository.findById(UUID.fromString(seedDekId)).orElseThrow().getStatus())
                 .isEqualTo(KeyStatus.ROTATING);
-        assertThat(keyVersionRepository.findActiveKek())
+        assertThat(keyVersionRepository.findActiveDek())
                 .isPresent()
                 .get()
-                .satisfies(kv -> assertThat(kv.getId().toString()).isNotEqualTo(seedKekId));
+                .satisfies(kv -> assertThat(kv.getId().toString()).isNotEqualTo(seedDekId));
     }
 
     @Test
-    void kekRotation_preRotationTokensDetokenisableDuringRotationWindow() {
+    void dekRotation_preRotationTokensDetokenisableDuringRotationWindow() {
         String visaToken = tokenise(VISA_PAN);
         String mcToken   = tokenise(MC_PAN);
 
-        keyRotationService.initiateScheduledRotation("ls-kek-v2", RotationReason.SCHEDULED);
+        keyRotationService.initiateScheduledRotation("ls-dek-v2", RotationReason.SCHEDULED);
 
-        // Old key is ROTATING — detokenisation must still work using old KEK from ring
+        // Old key is ROTATING — detokenisation must still work using old DEK from ring
         assertDetokenisable(visaToken, VISA_PAN);
         assertDetokenisable(mcToken,   MC_PAN);
     }
 
     @Test
-    void kekRotation_afterBatch_allTokensMigratedAndDetokenisable() {
+    void dekRotation_afterBatch_allTokensMigratedAndDetokenisable() {
         String visaToken = tokenise(VISA_PAN);
         String mcToken   = tokenise(MC_PAN);
 
-        UUID oldKekId = UUID.fromString(seedKekId);
-        keyRotationService.initiateScheduledRotation("ls-kek-v2", RotationReason.SCHEDULED);
-        UUID newKekId = keyVersionRepository.findActiveKekOrThrow().getId();
+        UUID oldDekId = UUID.fromString(seedDekId);
+        keyRotationService.initiateScheduledRotation("ls-dek-v2", RotationReason.SCHEDULED);
+        UUID newDekId = keyVersionRepository.findActiveDekOrThrow().getId();
 
         rotationJob.processRotationBatch();
 
-        assertThat(tokenVaultRepository.countActiveByKeyVersionId(oldKekId)).isZero();
+        assertThat(tokenVaultRepository.countActiveByKeyVersionId(oldDekId)).isZero();
         assertThat(tokenVaultRepository.findActiveByToken(visaToken).orElseThrow()
-                .getKeyVersion().getId()).isEqualTo(newKekId);
+                .getKeyVersion().getId()).isEqualTo(newDekId);
 
         assertDetokenisable(visaToken, VISA_PAN);
         assertDetokenisable(mcToken,   MC_PAN);
     }
 
     @Test
-    void kekRotation_afterBatch_oldKeyRetired() {
+    void dekRotation_afterBatch_oldKeyRetired() {
         tokenise(VISA_PAN);
 
-        keyRotationService.initiateScheduledRotation("ls-kek-v2", RotationReason.SCHEDULED);
+        keyRotationService.initiateScheduledRotation("ls-dek-v2", RotationReason.SCHEDULED);
         rotationJob.processRotationBatch();
 
-        assertThat(keyVersionRepository.findById(UUID.fromString(seedKekId)).orElseThrow().getStatus())
+        assertThat(keyVersionRepository.findById(UUID.fromString(seedDekId)).orElseThrow().getStatus())
                 .isEqualTo(KeyStatus.RETIRED);
     }
 
     @Test
-    void kekRotation_auditLog_containsStartedAndCompletedEvents() {
+    void dekRotation_auditLog_containsStartedAndCompletedEvents() {
         tokenise(VISA_PAN);
 
-        keyRotationService.initiateScheduledRotation("ls-kek-v2", RotationReason.SCHEDULED);
+        keyRotationService.initiateScheduledRotation("ls-dek-v2", RotationReason.SCHEDULED);
         rotationJob.processRotationBatch();
 
         assertThat(auditLogRepository.findAll())

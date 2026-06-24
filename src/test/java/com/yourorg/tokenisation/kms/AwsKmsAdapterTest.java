@@ -3,8 +3,6 @@ package com.yourorg.tokenisation.kms;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -15,7 +13,6 @@ import software.amazon.awssdk.services.kms.model.KeyMetadata;
 
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -34,12 +31,10 @@ import static org.mockito.Mockito.when;
 class AwsKmsAdapterTest {
 
     private static final String MASTER_KEY_ARN = "arn:aws:kms:ap-southeast-2:123456789:key/test-key";
-    private static final byte[] PLAINTEXT_KEK = new byte[32];
-    private static final byte[] PLAINTEXT_DEK = new byte[32];
+    private static final byte[] PLAINTEXT_DEK  = new byte[32];
     private static final byte[] MOCK_CIPHERTEXT = new byte[]{0x01, 0x02, 0x03, 0x04};
 
     static {
-        Arrays.fill(PLAINTEXT_KEK, (byte) 0xAA);
         Arrays.fill(PLAINTEXT_DEK, (byte) 0xBB);
     }
 
@@ -53,121 +48,105 @@ class AwsKmsAdapterTest {
         adapter = new AwsKmsAdapter(kmsClient, MASTER_KEY_ARN);
     }
 
-    // ── unwrapKek ────────────────────────────────────────────────────────────
+    // ── generateDataKey ───────────────────────────────────────────────────────
 
     @Test
-    void unwrapKek_validBlob_callsKmsDecryptAndReturnsPlaintext() {
-        byte[] encryptedKekBytes = new byte[]{0x10, 0x20, 0x30};
-        String encryptedKekBlob = Base64.getEncoder().encodeToString(encryptedKekBytes);
-        stubDecryptResponse(PLAINTEXT_KEK);
+    void generateDataKey_callsKmsGenerateDataKeyAndReturnsDataKey() {
+        stubGenerateDataKeyResponse(PLAINTEXT_DEK, MOCK_CIPHERTEXT);
 
-        byte[] returnedKek = adapter.unwrapKek(encryptedKekBlob);
+        DataKey result = adapter.generateDataKey();
 
-        assertThat(returnedKek).isEqualTo(PLAINTEXT_KEK);
+        assertThat(result.plaintextDek()).isEqualTo(PLAINTEXT_DEK);
+        assertThat(result.encryptedDekBlob()).isEqualTo(MOCK_CIPHERTEXT);
+        ArgumentCaptor<GenerateDataKeyRequest> requestCaptor =
+                ArgumentCaptor.forClass(GenerateDataKeyRequest.class);
+        verify(kmsClient).generateDataKey(requestCaptor.capture());
+        GenerateDataKeyRequest sentRequest = requestCaptor.getValue();
+        assertThat(sentRequest.keyId()).isEqualTo(MASTER_KEY_ARN);
+        assertThat(sentRequest.keySpec()).isEqualTo(DataKeySpec.AES_256);
+        assertThat(sentRequest.encryptionContext()).containsEntry("purpose", "data-key");
+    }
+
+    @Test
+    void generateDataKey_kmsException_throwsKmsOperationException() {
+        when(kmsClient.generateDataKey(any(GenerateDataKeyRequest.class)))
+                .thenThrow(KmsException.builder().message("AccessDenied").build());
+
+        assertThatThrownBy(() -> adapter.generateDataKey())
+                .isInstanceOf(KmsOperationException.class)
+                .hasMessageContaining("GenerateDataKey failed");
+    }
+
+    // ── decryptDataKey ────────────────────────────────────────────────────────
+
+    @Test
+    void decryptDataKey_validBlob_callsKmsDecryptAndReturnsPlaintext() {
+        stubDecryptResponse(PLAINTEXT_DEK);
+
+        byte[] result = adapter.decryptDataKey(MOCK_CIPHERTEXT);
+
+        assertThat(result).isEqualTo(PLAINTEXT_DEK);
         ArgumentCaptor<DecryptRequest> requestCaptor = ArgumentCaptor.forClass(DecryptRequest.class);
         verify(kmsClient).decrypt(requestCaptor.capture());
         DecryptRequest sentRequest = requestCaptor.getValue();
         assertThat(sentRequest.keyId()).isEqualTo(MASTER_KEY_ARN);
-        assertThat(sentRequest.encryptionContext()).containsKey("purpose");
-        assertThat(sentRequest.encryptionContext().get("purpose")).isEqualTo("kek-unwrap");
+        assertThat(sentRequest.encryptionContext()).containsEntry("purpose", "data-key");
     }
 
     @Test
-    void unwrapKek_blankBlob_throwsIllegalArgument() {
-        assertThatThrownBy(() -> adapter.unwrapKek("   "))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("null or blank");
-    }
-
-    @Test
-    void unwrapKek_nullBlob_throwsIllegalArgument() {
-        assertThatThrownBy(() -> adapter.unwrapKek(null))
-                .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
-    void unwrapKek_kmsException_throwsKmsOperationException() {
-        String validBlob = Base64.getEncoder().encodeToString(new byte[]{0x01});
+    void decryptDataKey_kmsException_throwsKmsOperationException() {
         when(kmsClient.decrypt(any(DecryptRequest.class)))
                 .thenThrow(KmsException.builder().message("AccessDenied").build());
 
-        assertThatThrownBy(() -> adapter.unwrapKek(validBlob))
+        assertThatThrownBy(() -> adapter.decryptDataKey(MOCK_CIPHERTEXT))
                 .isInstanceOf(KmsOperationException.class)
-                .hasMessageContaining("KEK unwrap failed");
+                .hasMessageContaining("DEK decrypt failed");
     }
 
-    // ── wrapDek ──────────────────────────────────────────────────────────────
+    @Test
+    void decryptDataKey_nullBlob_throwsIllegalArgument() {
+        assertThatThrownBy(() -> adapter.decryptDataKey(null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ── wrapNewHmacKey ────────────────────────────────────────────────────────
 
     @Test
-    void wrapDek_validDek_callsKmsEncryptWithCorrectContext() {
+    void wrapNewHmacKey_validKey_callsKmsEncryptWithHmacContext() {
         stubEncryptResponse(MOCK_CIPHERTEXT);
+        byte[] hmacKey = new byte[32];
 
-        byte[] wrappedDek = adapter.wrapDek(PLAINTEXT_DEK.clone(), "version-123");
+        byte[] wrappedKey = adapter.wrapNewHmacKey(hmacKey);
 
-        assertThat(wrappedDek).isEqualTo(MOCK_CIPHERTEXT);
+        assertThat(wrappedKey).isEqualTo(MOCK_CIPHERTEXT);
         ArgumentCaptor<EncryptRequest> requestCaptor = ArgumentCaptor.forClass(EncryptRequest.class);
         verify(kmsClient).encrypt(requestCaptor.capture());
         EncryptRequest sentRequest = requestCaptor.getValue();
         assertThat(sentRequest.keyId()).isEqualTo(MASTER_KEY_ARN);
-        assertThat(sentRequest.encryptionContext()).containsEntry("purpose", "dek-wrap");
-        assertThat(sentRequest.encryptionContext()).containsEntry("keyVersionId", "version-123");
+        assertThat(sentRequest.encryptionContext()).containsEntry("purpose", "hmac-key");
     }
 
     @Test
-    void wrapDek_nullDek_throwsIllegalArgument() {
-        assertThatThrownBy(() -> adapter.wrapDek(null, "version-1"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("32 bytes");
-    }
-
-    @ParameterizedTest
-    @ValueSource(ints = {0, 16, 24, 31, 33, 64})
-    void wrapDek_wrongDekLength_throwsIllegalArgument(int wrongLength) {
-        byte[] wrongSizeDek = new byte[wrongLength];
-        assertThatThrownBy(() -> adapter.wrapDek(wrongSizeDek, "version-1"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("32 bytes");
-    }
-
-    @Test
-    void wrapDek_kmsException_throwsKmsOperationException() {
+    void wrapNewHmacKey_kmsException_throwsKmsOperationException() {
         when(kmsClient.encrypt(any(EncryptRequest.class)))
                 .thenThrow(KmsException.builder().message("InvalidKeyUsage").build());
 
-        assertThatThrownBy(() -> adapter.wrapDek(PLAINTEXT_DEK.clone(), "version-1"))
-                .isInstanceOf(KmsOperationException.class)
-                .hasMessageContaining("DEK wrap failed");
+        assertThatThrownBy(() -> adapter.wrapNewHmacKey(new byte[32]))
+                .isInstanceOf(KmsOperationException.class);
     }
 
-    // ── rewrapDek ────────────────────────────────────────────────────────────
+    // ── unwrapHmacKey ─────────────────────────────────────────────────────────
 
     @Test
-    void rewrapDek_validDek_decryptsUnderOldVersionThenEncryptsUnderNew() {
-        byte[] existingEncryptedDek = new byte[]{0x55, 0x66};
+    void unwrapHmacKey_validBlob_callsKmsDecryptWithHmacContext() {
         stubDecryptResponse(PLAINTEXT_DEK);
-        stubEncryptResponse(MOCK_CIPHERTEXT);
 
-        byte[] rewrapped = adapter.rewrapDek(existingEncryptedDek, "old-version", "new-version");
+        byte[] result = adapter.unwrapHmacKey(MOCK_CIPHERTEXT);
 
-        assertThat(rewrapped).isEqualTo(MOCK_CIPHERTEXT);
-        // Verify decrypt was called with old-version context
-        ArgumentCaptor<DecryptRequest> decryptCaptor = ArgumentCaptor.forClass(DecryptRequest.class);
-        verify(kmsClient).decrypt(decryptCaptor.capture());
-        assertThat(decryptCaptor.getValue().encryptionContext()).containsEntry("keyVersionId", "old-version");
-        // Verify encrypt was called with new-version context
-        ArgumentCaptor<EncryptRequest> encryptCaptor = ArgumentCaptor.forClass(EncryptRequest.class);
-        verify(kmsClient).encrypt(encryptCaptor.capture());
-        assertThat(encryptCaptor.getValue().encryptionContext()).containsEntry("keyVersionId", "new-version");
-    }
-
-    @Test
-    void rewrapDek_kmsDecryptFails_throwsKmsOperationException() {
-        when(kmsClient.decrypt(any(DecryptRequest.class)))
-                .thenThrow(KmsException.builder().message("DisabledException").build());
-
-        assertThatThrownBy(() -> adapter.rewrapDek(new byte[]{0x01}, "old-version", "new-version"))
-                .isInstanceOf(KmsOperationException.class)
-                .hasMessageContaining("DEK unwrap failed");
+        assertThat(result).isEqualTo(PLAINTEXT_DEK);
+        ArgumentCaptor<DecryptRequest> requestCaptor = ArgumentCaptor.forClass(DecryptRequest.class);
+        verify(kmsClient).decrypt(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().encryptionContext()).containsEntry("purpose", "hmac-key");
     }
 
     // ── describeKey ──────────────────────────────────────────────────────────
@@ -198,6 +177,14 @@ class AwsKmsAdapterTest {
     }
 
     // ── Test helpers ─────────────────────────────────────────────────────────
+
+    private void stubGenerateDataKeyResponse(byte[] plaintext, byte[] ciphertext) {
+        when(kmsClient.generateDataKey(any(GenerateDataKeyRequest.class)))
+                .thenReturn(GenerateDataKeyResponse.builder()
+                        .plaintext(SdkBytes.fromByteArray(plaintext))
+                        .ciphertextBlob(SdkBytes.fromByteArray(ciphertext))
+                        .build());
+    }
 
     private void stubDecryptResponse(byte[] plaintext) {
         when(kmsClient.decrypt(any(DecryptRequest.class)))

@@ -3,7 +3,7 @@ package com.yourorg.tokenisation;
 import com.yourorg.tokenisation.api.request.TokeniseRequest;
 import com.yourorg.tokenisation.api.response.DetokeniseResponse;
 import com.yourorg.tokenisation.api.response.TokeniseResponse;
-import com.yourorg.tokenisation.crypto.InMemoryKekKeyRing;
+import com.yourorg.tokenisation.crypto.InMemoryDekKeyRing;
 import com.yourorg.tokenisation.domain.KeyStatus;
 import com.yourorg.tokenisation.domain.KeyVersion;
 import com.yourorg.tokenisation.domain.RotationReason;
@@ -47,9 +47,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <h3>Key version setup</h3>
  * Before each test, {@link #setUpForRotationTest()}:
  * <ul>
- *   <li>Retires any extra KEK versions left by previous tests (prevents two ACTIVE KEK rows).
- *   <li>Resets the seed KEK to {@code ACTIVE} in the database.
- *   <li>Reloads the seed key into {@link InMemoryKekKeyRing} with fresh {@code ACTIVE} status
+ *   <li>Retires any extra DEK versions left by previous tests (prevents two ACTIVE DEK rows).
+ *   <li>Resets the seed DEK to {@code ACTIVE} in the database.
+ *   <li>Reloads the seed key into {@link InMemoryDekKeyRing} with fresh {@code ACTIVE} status
  *       and re-promotes it, so that tokenisation uses the correct key material.
  * </ul>
  */
@@ -65,7 +65,7 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private KeyRotationService keyRotationService;
     @Autowired private RotationJob rotationJob;
-    @Autowired private InMemoryKekKeyRing keyRing;
+    @Autowired private InMemoryDekKeyRing dekRing;
     @Autowired private KmsProvider kmsProvider;
 
     @BeforeEach
@@ -74,22 +74,22 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
         jdbcTemplate.execute("DELETE FROM token_vault");
         jdbcTemplate.execute("DELETE FROM token_audit_log");
 
-        // 2. Retire any extra KEK versions created by previous rotation tests.
-        //    Scoped to key_type='KEK' so HMAC rows are untouched (preserves HMAC ring state).
+        // 2. Retire any extra DEK versions created by previous rotation tests.
+        //    Scoped to key_type='DEK' so HMAC rows are untouched (preserves HMAC ring state).
         jdbcTemplate.execute(
-                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid AND key_type = 'KEK'");
+                "UPDATE key_versions SET status = 'RETIRED' WHERE id != '" + SEED_KEY_VERSION_ID + "'::uuid AND key_type = 'DEK'");
         jdbcTemplate.execute(
                 "UPDATE key_versions SET status = 'ACTIVE' WHERE id = '" + SEED_KEY_VERSION_ID + "'::uuid");
 
         // 3. Reload seed key into the ring with fresh ACTIVE status and re-promote it.
         //    Previous rotation tests may have promoted a different key or retired the seed entry.
-        KeyVersion seedKey = keyVersionRepository.findActiveKekOrThrow();
-        byte[] seedKek = kmsProvider.unwrapKek(seedKey.getEncryptedKekBlob());
+        KeyVersion seedKey = keyVersionRepository.findActiveDekOrThrow();
+        byte[] seedDek = kmsProvider.decryptDataKey(seedKey.getEncryptedDekBlob());
         try {
-            keyRing.load(SEED_KEY_VERSION_ID, seedKek, seedKey.getRotateBy());
-            keyRing.promoteActive(SEED_KEY_VERSION_ID);
+            dekRing.load(SEED_KEY_VERSION_ID, seedDek, seedKey.getRotateBy());
+            dekRing.promoteActive(SEED_KEY_VERSION_ID);
         } finally {
-            Arrays.fill(seedKek, (byte) 0);
+            Arrays.fill(seedDek, (byte) 0);
         }
     }
 
@@ -103,7 +103,7 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(keyVersionRepository.findById(oldKeyId).orElseThrow().getStatus())
                 .isEqualTo(KeyStatus.ROTATING);
-        assertThat(keyVersionRepository.findActiveKek())
+        assertThat(keyVersionRepository.findActiveDek())
                 .isPresent()
                 .get()
                 .satisfies(kv -> assertThat(kv.getId()).isNotEqualTo(oldKeyId));
@@ -118,7 +118,7 @@ class ScheduledRotationIntegrationTest extends AbstractIntegrationTest {
 
         UUID oldKeyId = UUID.fromString(SEED_KEY_VERSION_ID);
         keyRotationService.initiateScheduledRotation("test-key-v2", RotationReason.SCHEDULED);
-        UUID newKeyId = keyVersionRepository.findActiveKekOrThrow().getId();
+        UUID newKeyId = keyVersionRepository.findActiveDekOrThrow().getId();
 
         rotationJob.processRotationBatch();
 

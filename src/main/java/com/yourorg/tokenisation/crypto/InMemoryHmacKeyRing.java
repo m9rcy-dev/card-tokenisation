@@ -11,18 +11,18 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Versioned in-memory store for HMAC signing secrets used by {@link PanHasher}.
  *
- * <p>Mirrors {@link InMemoryKekKeyRing} for KEK material but holds arbitrary-length
- * HMAC secrets instead of 32-byte DEK-wrapping keys. A single active pointer is
+ * <p>Mirrors {@link InMemoryDekKeyRing} for DEK material but holds arbitrary-length
+ * HMAC secrets instead of 32-byte data encryption keys. A single active pointer is
  * maintained — HMAC rotation promotes the new version after all vault records are
  * re-hashed.
  *
- * <p>Unlike the KEK ring, retired versions are removed from the map and their secret bytes
+ * <p>Unlike the DEK ring, retired versions are removed from the map and their secret bytes
  * are zeroed — there is no need to retain old HMAC secrets after the re-hash batch completes.
  *
  * <p>Thread safety: the map uses {@code ConcurrentHashMap}; the active pointer is
  * {@code volatile} so that a promotion is immediately visible to all threads.
  *
- * @see InMemoryKekKeyRing for the KEK-specific ring
+ * @see InMemoryDekKeyRing for the DEK-specific ring
  * @see KeyRing for the shared lifecycle interface
  */
 @Component
@@ -38,7 +38,7 @@ public class InMemoryHmacKeyRing implements KeyRing {
      *
      * @param versionId UUID string of the HMAC key version row
      * @param secret    the raw HMAC secret bytes; must not be null or empty
-     * @param expiresAt not stored, kept for API symmetry with {@link InMemoryKekKeyRing#load}
+     * @param expiresAt not stored, kept for API symmetry with {@link InMemoryDekKeyRing#load}
      */
     @Override
     public void load(String versionId, byte[] secret, Instant expiresAt) {
